@@ -82,6 +82,19 @@
     if (useful.some(p => /projection|decay|band entry/i.test(p.seriesName + (p.data?.eventLabel || '')))) html += '<div class="tooltip-note">Conditional on no new registration and the current decay continuing.</div>';
     return html;
   }
+  function scaleVisibleYAxis() {
+    if (!chart || !data) return;
+    const zoom = chart.getOption().dataZoom?.[0];
+    const bounds = viewBounds();
+    const start = Number(zoom?.startValue ?? bounds.start), end = Number(zoom?.endValue ?? bounds.end);
+    const values = [...data.pts, ...data.projection, ...data.registrations.map(r=>[r.time,r.price]), [data.current.time,data.current.price]]
+      .filter(p=>ts(p[0])>=start && ts(p[0])<=end).map(p=>Number(p[1]));
+    if (data.trend) for (const t of [start,end]) values.push(Math.max(0,Number(data.trend.intercept)+Number(data.trend.slope)*(t-ts(data.trend.origin))/DAY+Number(data.trend.high)));
+    if (data.bands) values.push(Number(data.bands.max));
+    const step = unit === 'usd' ? 10000 : 100;
+    const max = Math.ceil(convert(Math.max(1,...values.filter(Number.isFinite)))*1.12/step)*step;
+    chart.setOption({yAxis:{max}});
+  }
   function renderChart(preserveZoom = false) {
     if (!chart || !data) return;
     const c = colors(), mobile = innerWidth < 620, bounds = viewBounds();
@@ -109,6 +122,7 @@
     ];
     chart.setOption({animation:false,backgroundColor:'transparent',textStyle:{fontFamily:'Inter, system-ui, sans-serif',color:c.muted},grid:{left:mobile ? 58 : 77,right:mobile ? 24 : 40,top:66,bottom:87},legend:{data:['Registration cost','Registrations','Trend band','Decay projection'],top:16,left:mobile ? 16 : 27,textStyle:{color:c.muted,fontSize:mobile ? 9 : 10},itemWidth:mobile ? 13 : 18,itemHeight:7,itemGap:mobile ? 12 : 22,selectedMode:true},tooltip:{trigger:'axis',confine:true,backgroundColor:c.panel,borderColor:c.border,textStyle:{color:c.text,fontSize:12},extraCssText:'max-width:330px;box-shadow:0 8px 32px #0003;border-radius:9px;padding:14px;',axisPointer:{type:'line',lineStyle:{color:c.dim,type:'dashed'}},formatter:tooltip},xAxis:{type:'time',min:minTime,max:bounds.end,axisLine:{lineStyle:{color:c.border}},axisTick:{show:false},axisLabel:{color:c.dim,fontSize:10,hideOverlap:true,formatter:v=>date(v)},splitLine:{show:false}},yAxis:{type:'value',min:0,name:unit === 'tao' ? 'TAO' : 'USD · latest rate',nameTextStyle:{color:c.dim,fontSize:9,align:'left'},nameGap:20,axisLabel:{color:c.dim,fontSize:10,formatter:v=>unit === 'usd' ? (v>=1000000 ? `$${num(v/1000000,1)}m` : `$${num(v/1000,0)}k`) : num(v)},axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:c.grid,type:'dashed',opacity:.65}}},dataZoom:[{type:'inside',startValue:bounds.start,endValue:bounds.end,filterMode:'none',zoomOnMouseWheel:true,moveOnMouseWheel:false,preventDefaultMouseMove:true},{type:'slider',startValue:bounds.start,endValue:bounds.end,filterMode:'none',bottom:18,height:23,left:mobile ? 58 : 77,right:mobile ? 24 : 40,borderColor:c.border,backgroundColor:'transparent',fillerColor:theme === 'dark' ? '#87beff0c' : '#226bc00c',dataBackground:{lineStyle:{color:c.dim,opacity:.5},areaStyle:{color:c.dim,opacity:.08}},selectedDataBackground:{lineStyle:{color:c.accent,opacity:.7},areaStyle:{color:c.accent,opacity:.12}},handleStyle:{color:c.panel,borderColor:c.dim},textStyle:{color:c.muted,fontSize:9},labelFormatter:v=>date(v)}],series}, {notMerge:true});
     if (oldZoom?.[0] && Number.isFinite(oldZoom[0].start)) chart.dispatchAction({type:'dataZoom',start:oldZoom[0].start,end:oldZoom[0].end});
+    scaleVisibleYAxis();
     $('chart-empty').hidden = true;
   }
   async function refresh() {
@@ -153,6 +167,7 @@
     $('notice').hidden=false;$('notice').textContent='The chart could not load. Refresh this page to try again.';return;
   }
   chart = echarts.init($('chart'), null, {renderer:'canvas'}); window.chart = chart;
+  chart.on('datazoom', scaleVisibleYAxis);
   let resizeTimer;
   window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{chart.resize();if(data)renderChart(true);},150);});
   refresh(); setInterval(refresh, 60000); setInterval(updateMeta, 30000);
