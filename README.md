@@ -15,3 +15,5 @@ The conservative ribbon has a minimum width of 30% of the raised trend value (±
 The Docker build assigns content-hashed filenames to chart JavaScript and CSS. This prevents stale scripts from being cached under a new query string during rolling deployments.
 
 Fan: the robust last-eight fit is enclosed by the full residual envelope plus 2% margin, with minimum ±15% of median paid price. After the latest observed registration, both edges widen quadratically: one median successive price move (minimum 10%) over 14 days. The outer fan adds max(residual SD, 10% of median price) and widens 1.7x as fast. Buffer-upper and main-upper crossings use bounded bisection of the piecewise concave decay-minus-edge gap. These are planning margins, not probabilities.
+
+The chart is the first main section. Desktop and mobile default to 10 August 2026 through the current time at page load (UTC). The 10 Aug–today button restores that range; 30d/90d/All presets still include the conditional future projection.

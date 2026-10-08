@@ -11,3 +11,6 @@ html[data-theme=light]{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--panel-alt:
 
 .chart-now{padding:4px 27px 0;color:var(--accent);font-size:12px;font-weight:600}.budget-detail{padding:7px 27px 0;color:var(--muted);font-size:11px;line-height:1.6}.tooltip-row{gap:12px;font-size:11px}.tooltip-row strong{text-align:right}
 @media(max-width:620px){.chart-now,.budget-detail{padding-left:16px;padding-right:16px}.budget-detail{font-size:10px}}
+
+main > .chart-panel:first-child{margin-top:20px}
+@media(max-width:620px){.segmented button[data-range]{padding-left:8px;padding-right:8px}.chart-controls{gap:6px}}

@@ -18,6 +18,18 @@
       <button class="theme-button" id="theme-toggle" aria-label="Switch to light theme"><span id="theme-icon" aria-hidden="true">☀</span><span id="theme-label">Light</span></button>
     </header>
     <main>
+      <section class="chart-panel" aria-label="Interactive registration cost chart">
+        <div class="chart-toolbar">
+          <div><h2>Registration cost over time</h2><p id="chart-subtitle">Historical cost and conditional projection · UTC</p></div>
+          <div class="chart-controls">
+            <div class="segmented" role="group" aria-label="Historical time range"><button data-range="default" class="active" aria-pressed="true">10 Aug–today</button><button data-range="30">30d</button><button data-range="90">90d</button><button data-range="all">All</button></div>
+            <div class="segmented" role="group" aria-label="Price unit"><button data-unit="tao" class="active" aria-pressed="true">TAO</button><button data-unit="usd">USD</button></div>
+          </div>
+        </div>
+        <div class="chart-now" id="chart-now" aria-live="polite"></div><div class="budget-detail" id="budget-detail"></div><div class="chart-wrap"><div id="chart" aria-label="Registration cost chart. Use the time range buttons or the slider to zoom." role="img"></div><div class="chart-empty" id="chart-empty">Loading network history<span>Current cost is read directly from the Finney chain.</span></div></div>
+        <div id="reference-windows" class="reference-windows" aria-live="polite"></div>
+        <div class="chart-footer"><span><span class="small-icon" aria-hidden="true">↔</span> Drag the slider to zoom · scroll or pinch inside the chart</span><button id="reset-zoom" class="text-button">Reset view</button></div>
+      </section>
       <div class="heading-row">
         <div><div class="eyebrow">FINNEY · SUBNET REGISTRATION</div><h1>The cost to join the network.</h1><p class="intro">Live registration cost, recent prices paid, and the path of the current decay.</p></div>
         <div class="live-status"><span class="status-dot" id="status-dot"></span><span id="status-label">Connecting to data</span></div>
@@ -27,18 +39,6 @@
         <article class="metric"><div class="metric-label">CURRENT REGISTRATION COST <span class="live-tag">LIVE</span></div><div class="metric-value" id="current-value">—</div><div class="metric-detail" id="current-detail">Waiting for the latest chain reading</div></article>
         <article class="metric"><div class="metric-label">CURRENT DECAY</div><div class="metric-value" id="decay-value">—</div><div class="metric-detail">Per day, if no subnet registers</div></article>
         <article class="metric"><div class="metric-label">EARLIEST LIKELY · SAFE ESTIMATE</div><div class="metric-value date-value" id="crossing-value">—</div><div class="metric-detail" id="crossing-detail">Conditional on the current decay continuing</div></article>
-      </section>
-      <section class="chart-panel" aria-label="Interactive registration cost chart">
-        <div class="chart-toolbar">
-          <div><h2>Registration cost over time</h2><p id="chart-subtitle">Historical cost and conditional projection · UTC</p></div>
-          <div class="chart-controls">
-            <div class="segmented" role="group" aria-label="Historical time range"><button data-range="30" class="active" aria-pressed="true">30d</button><button data-range="90">90d</button><button data-range="all">All</button></div>
-            <div class="segmented" role="group" aria-label="Price unit"><button data-unit="tao" class="active" aria-pressed="true">TAO</button><button data-unit="usd">USD</button></div>
-          </div>
-        </div>
-        <div class="chart-now" id="chart-now" aria-live="polite"></div><div class="budget-detail" id="budget-detail"></div><div class="chart-wrap"><div id="chart" aria-label="Registration cost chart. Use the time range buttons or the slider to zoom." role="img"></div><div class="chart-empty" id="chart-empty">Loading network history<span>Current cost is read directly from the Finney chain.</span></div></div>
-        <div id="reference-windows" class="reference-windows" aria-live="polite"></div>
-        <div class="chart-footer"><span><span class="small-icon" aria-hidden="true">↔</span> Drag the slider to zoom · scroll or pinch inside the chart</span><button id="reset-zoom" class="text-button">Reset view</button></div>
       </section>
       <section class="explanation" aria-label="How to read the chart">
         <div class="section-heading"><div class="eyebrow">HOW TO READ THIS</div><h2>A view of the mechanism.</h2></div>
