@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Live Bittensor subnet registration cost, historical registrations, and a conditional decay projection with interactive trend bands.">
+  <title>Subnet registration price · Bittensor</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%230d151f'/%3E%3Cpath d='M8 27L15 12L22 25L31 9' stroke='%237cbdff' fill='none' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/echarts.min.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Subnet registration price home"><span class="brand-icon" aria-hidden="true">τ</span><span>Bittensor<span class="brand-sub">NETWORK OBSERVATORY</span></span></a>
+      <button class="theme-button" id="theme-toggle" aria-label="Switch to light theme"><span id="theme-icon" aria-hidden="true">☀</span><span id="theme-label">Light</span></button>
+    </header>
+    <main>
+      <div class="heading-row">
+        <div><div class="eyebrow">FINNEY · SUBNET REGISTRATION</div><h1>The cost to join the network.</h1><p class="intro">Live registration cost, recent prices paid, and the path of the current decay.</p></div>
+        <div class="live-status"><span class="status-dot" id="status-dot"></span><span id="status-label">Connecting to data</span></div>
+      </div>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section class="metrics" aria-label="Current network metrics">
+        <article class="metric"><div class="metric-label">CURRENT REGISTRATION COST <span class="live-tag">LIVE</span></div><div class="metric-value" id="current-value">—</div><div class="metric-detail" id="current-detail">Waiting for the latest chain reading</div></article>
+        <article class="metric"><div class="metric-label">CURRENT DECAY</div><div class="metric-value" id="decay-value">—</div><div class="metric-detail">Per day, if no subnet registers</div></article>
+        <article class="metric"><div class="metric-label">PROJECTED TREND-BAND ENTRY</div><div class="metric-value date-value" id="crossing-value">—</div><div class="metric-detail" id="crossing-detail">Conditional on the current decay continuing</div></article>
+      </section>
+      <section class="chart-panel" aria-label="Interactive registration cost chart">
+        <div class="chart-toolbar">
+          <div><h2>Registration cost over time</h2><p id="chart-subtitle">Historical cost and conditional projection · UTC</p></div>
+          <div class="chart-controls">
+            <div class="segmented" role="group" aria-label="Historical time range"><button data-range="30" class="active" aria-pressed="true">30d</button><button data-range="90">90d</button><button data-range="all">All</button></div>
+            <div class="segmented" role="group" aria-label="Price unit"><button data-unit="tao" class="active" aria-pressed="true">TAO</button><button data-unit="usd">USD</button></div>
+          </div>
+        </div>
+        <div class="chart-wrap"><div id="chart" aria-label="Registration cost chart. Use the time range buttons or the slider to zoom." role="img"></div><div class="chart-empty" id="chart-empty">Loading network history<span>Current cost is read directly from the Finney chain.</span></div></div>
+        <div id="reference-windows" class="reference-windows" aria-live="polite"></div>
+        <div class="chart-footer"><span><span class="small-icon" aria-hidden="true">↔</span> Drag the slider to zoom · scroll or pinch inside the chart</span><button id="reset-zoom" class="text-button">Reset view</button></div>
+      </section>
+      <section class="explanation" aria-label="How to read the chart">
+        <div class="section-heading"><div class="eyebrow">HOW TO READ THIS</div><h2>A view of the mechanism.</h2></div>
+        <div class="explanation-grid">
+          <article><span class="explain-line solid"></span><h3>Cost & registrations</h3><p>The line tracks the network registration cost. Red points mark observed registrations and their estimated prices paid. After a registration the cost jumps; between registrations it decays.</p></article>
+          <article><span class="explain-line band"></span><h3>Two reference bands</h3><p>The grey band spans the lowest to highest price of the last eight observed registrations. The blue band follows the recent registration-price trend, with a range based on its historical residuals. Neither band predicts when someone will register.</p></article>
+          <article><span class="explain-line dashed"></span><h3>A conditional path</h3><p>The dashed line extends the current decay, assuming no new registration and no change to the mechanism. Dated markers show its path and band crossings. A registration resets that path. The zero endpoint is hypothetical: the chain has a minimum cost floor. The projection is limited to 60 days. This is a mechanism illustration, not advice.</p></article>
+        </div>
+      </section>
+      <footer class="page-footer"><div><span class="footer-title">Data, kept in context.</span><p id="source-details">Current cost: Finney chain · History & TAO/USD: Taostats</p><p id="freshness-details">Checking source timestamps…</p></div><div class="footer-note">USD values use the latest available TAO/USD rate,<br>including for historical and projected values.<span id="usd-rate"></span></div></footer>
+    </main>
+  </div>
+</body>
+</html>
