@@ -39,8 +39,11 @@ class MathTests(unittest.TestCase):
         events=[dict(time=i*b.DAY,price=100+10*i+(500 if i==4 else 0)) for i in range(8)]
         trend=b.trend_fit(events)
         self.assertEqual(trend['slope'],10)
-        self.assertAlmostEqual(trend['intercept']-trend['uplift'],100)
-        self.assertEqual(trend['low'],0)
+        self.assertAlmostEqual(trend['intercept'],100)
+        for event in events:
+            bounds=b.trend_bounds(trend,event['time'])
+            self.assertLessEqual(bounds['lower'],event['price'])
+            self.assertGreaterEqual(bounds['upper'],event['price'])
 
     def test_crossings_include_first_moving_band_entry(self):
         current=dict(time=int(.25*b.DAY),price=100)
@@ -51,18 +54,35 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual(next(m for m in markers if 'last' in m['label'])['price'],30)
         self.assertEqual(projection[-1][1],0)
 
-    def test_conservative_band_never_lowers_previous_edges(self):
-        for prices in ([100,120,90,140,110,180,130,220],
-                       [800,700,600,500,400,300,200,100]):
+    def test_fan_contains_all_recent_dots_and_widens_only_after_last_paid(self):
+        for prices in ([100,120,90,140,110,180,130,220], [800,700,600,500,400,300,200,100]):
             events=[dict(time=i*b.DAY,price=p) for i,p in enumerate(prices)]
             trend=b.trend_fit(events)
-            slope=trend['slope']
-            intercept=b.statistics.median(p-slope*i for i,p in enumerate(prices))
-            residuals=[p-intercept-slope*i for i,p in enumerate(prices)]
-            self.assertGreaterEqual(trend['intercept']+trend['low'],intercept+b.quantile(residuals,.1))
-            self.assertGreaterEqual(trend['intercept']+trend['high'],intercept+b.quantile(residuals,.9))
-            self.assertGreater(trend['intercept']+trend['high'],intercept+b.quantile(residuals,.9))
-            self.assertGreaterEqual(trend['intercept']+slope*7,trend['recent_anchor'])
+            for event in events:
+                bounds=b.trend_bounds(trend,event['time'])
+                self.assertLess(bounds['lower'],event['price'])
+                self.assertGreater(bounds['upper'],event['price'])
+            at=b.trend_bounds(trend,7*b.DAY)
+            future=b.trend_bounds(trend,7.25*b.DAY)
+            later=b.trend_bounds(trend,7.5*b.DAY)
+            self.assertGreater(future['upper']-future['central'],at['upper']-at['central'])
+            self.assertGreater(later['upper']-later['central'],future['upper']-future['central'])
+            self.assertGreaterEqual(future['buffer'],future['upper'])
+            self.assertLessEqual(future['buffer_lower'],future['lower'])
+
+    def test_curved_crossings_match_edges_and_outer_buffer_is_earlier(self):
+        for slope in (10,-10,-100):
+            trend=dict(origin=0,last_paid=0,slope=slope,intercept=600,low=-100,high=100,
+                       fan_curvature=2,buffer_multiplier=1.7,buffer_extra=80,policy='fan')
+            _,markers=b.project(dict(time=0,price=1200),60,None,trend)
+            safe=next(m for m in markers if m.get('edge')=='buffer upper edge')
+            main=next(m for m in markers if m.get('edge')=='conservative upper edge')
+            self.assertLess(safe['time'],main['time'])
+            self.assertAlmostEqual(safe['price'],b.trend_bounds(trend,safe['time'])['buffer'],places=5)
+            self.assertAlmostEqual(main['price'],b.trend_bounds(trend,main['time'])['upper'],places=5)
+            self.assertFalse(any('last 8' in m['label'] for m in markers))
+        _,markers=b.project(dict(time=0,price=650),60,None,trend)
+        self.assertEqual(next(m for m in markers if m.get('edge')=='buffer upper edge')['time'],0)
 
     def test_safe_entry_is_upper_edge_and_earlier_than_central_entry(self):
         trend=dict(origin=0,slope=5,intercept=50,low=0,high=20,policy='conservative')
@@ -83,8 +103,9 @@ class MathTests(unittest.TestCase):
         trend=b.trend_fit([dict(time=i*b.DAY,price=600+10*i) for i in range(8)])
         bounds=b.trend_bounds(trend,8*b.DAY)
         self.assertGreaterEqual(bounds['upper']-bounds['lower'],.3*bounds['lower']-1e-8)
-        self.assertGreaterEqual(bounds['buffer']-bounds['upper'],.15*bounds['lower']-1e-8)
-        self.assertGreaterEqual(bounds['lower'],bounds['central'])
+        self.assertGreaterEqual(bounds['buffer']-bounds['upper'],.10*600-1e-8)
+        self.assertLess(bounds['lower'],bounds['central'])
+        self.assertGreater(bounds['upper'],bounds['central'])
 
     def test_buffer_crossing_precedes_conservative_and_matches_price(self):
         for slope in (10,-10):

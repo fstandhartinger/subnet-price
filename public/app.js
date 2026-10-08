@@ -26,7 +26,15 @@
     return Object.fromEntries(['text','muted','dim','border','grid','accent','blue','red','panel'].map(key=>[key,c.getPropertyValue(`--${key}`).trim()]));
   };
   function trendBounds(t) {
-    const tr = data.trend, base = Number(tr.intercept) + Number(tr.slope) * (t-ts(tr.origin))/DAY;
+    const tr=data.trend;
+    if(tr.policy==='fan') {
+      const central=Number(tr.intercept)+Number(tr.slope)*(t-ts(tr.origin))/DAY;
+      const dt=Math.max(0,(t-ts(tr.last_paid))/DAY), widening=Number(tr.fan_curvature)*dt*dt;
+      const lower=central+Number(tr.low)-widening, upper=central+Number(tr.high)+widening;
+      const extra=Number(tr.buffer_extra)+(Number(tr.buffer_multiplier)-1)*widening;
+      return {central:Math.max(0,central),lower:Math.max(0,lower),upper:Math.max(0,upper),buffer:Math.max(0,upper+extra),bufferLower:Math.max(0,lower-extra)};
+    }
+    const base = Number(tr.intercept) + Number(tr.slope) * (t-ts(tr.origin))/DAY;
     const lower = base + Number(tr.low);
     const upper = Math.max(base+Number(tr.high), lower+Math.max(0,base)*Number(tr.minimum_width_fraction || 0));
     return {central:Math.max(0,Number(tr.central_intercept ?? tr.intercept)+Number(tr.slope)*(t-ts(tr.origin))/DAY),lower:Math.max(0,lower),upper:Math.max(0,upper),buffer:Math.max(0,upper+Math.max(Number(tr.buffer_extra || 0),Math.max(0,base)*Number(tr.minimum_buffer_fraction || 0)))};
@@ -60,7 +68,7 @@
     $('freshness-details').textContent = `Chain: ${age(data.current_at ?? current.time)} · History: ${age(data.history_at)} · TAO/USD: ${age(data.usd_at)}. Current cost refreshes about every 5 minutes.`;
     $('usd-rate').textContent = usdAvailable() ? `1 TAO ≈ $${num(rate(), 2)} · All dates in UTC` : 'TAO/USD currently unavailable · All dates in UTC';
     const referenceMarkers = (data.markers || []).filter(m => m.edge || /range|last/i.test(m.label));
-    $('reference-windows').textContent = referenceMarkers.length ? `Conditional windows · ${referenceMarkers.map(m => `${m.edge === 'buffer upper edge' ? 'Earliest likely · buffer upper edge' : m.edge ? 'Conservative upper edge' : 'Last 8 range'}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
+    $('reference-windows').textContent = referenceMarkers.length ? `Conditional windows · ${referenceMarkers.map(m => `${m.edge === 'buffer upper edge' ? 'Earliest likely · buffer upper edge' : m.edge ? 'Main fan upper edge' : 'Last 8 range'}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
     const b = data.trend ? trendBounds(ts(current.time)) : null;
     $('chart-now').textContent = `Now ≈ ${price(current.price)}${unit === 'tao' && usdAvailable() ? ` (≈ $${num(current.price*rate())})` : ''}`;
     $('budget-detail').textContent = b ? `At the current time: budget for up to ${num(b.buffer,0)} TAO${usdAvailable() ? ` ≈ $${num(b.buffer*rate(),0)}` : ''} · buffer upper edge` : 'Budget buffer currently unavailable';
@@ -92,7 +100,7 @@
     if (data.trend && Number.isFinite(Number(x))) {
       const b=trendBounds(Number(x));
       html += `<div class="tooltip-note">Reference estimates at this time</div>`;
-      for (const [label,v] of [['Central estimate',b.central],['Conservative upper edge',b.upper],['Budget for up to · buffer upper',b.buffer]]) html += `<div class="tooltip-row"><span>${label}</span><strong>${num(v)} TAO${usdAvailable() ? ` ≈ $${num(v*rate())}` : ''}</strong></div>`;
+      for (const [label,v] of [['Central estimate',b.central],['Main band lower',b.lower],['Main band upper',b.upper],['Buffer lower',b.bufferLower ?? b.lower],['Budget for up to · buffer upper',b.buffer]]) html += `<div class="tooltip-row"><span>${label}</span><strong>${num(v)} TAO${usdAvailable() ? ` ≈ $${num(v*rate())}` : ''}</strong></div>`;
     }
     return html;
   }
@@ -104,7 +112,7 @@
     const values = [...data.pts, ...data.projection, ...data.registrations.map(r=>[r.time,r.price]), [data.current.time,data.current.price]]
       .filter(p=>ts(p[0])>=start && ts(p[0])<=end).map(p=>Number(p[1]));
     if (data.trend) for (const t of [start,end]) values.push(trendBounds(t).buffer);
-    if (data.bands) values.push(Number(data.bands.max));
+    
     const step = unit === 'usd' ? 10000 : 100;
     const max = Math.ceil(convert(Math.max(1,...values.filter(Number.isFinite)))*1.12/step)*step;
     chart.setOption({yAxis:{max}});
@@ -115,17 +123,21 @@
     const oldZoom = preserveZoom ? chart.getOption()?.dataZoom : null;
     const points = data.pts.map(p => [ts(p[0]), convert(p[1]), Number(p[1])]);
     const projection = data.projection.map(p => [ts(p[0]), convert(p[1]), Number(p[1])]);
-    const trend = data.trend, band = data.bands;
+    const trend = data.trend;
     const trendPts = [];
     const minTime = points.length ? points[0][0] : bounds.start;
-    if (trend && trend.slope != null && Number.isFinite(Number(trend.slope))) for (let i = 0; i <= 120; i++) {
-      const t = minTime + (bounds.end - minTime) * i / 120;
-      const b=trendBounds(t);
-      trendPts.push([t,b.lower,b.upper,b.buffer,b.central]);
+    const fanStart=trend?.policy==='fan' ? Math.max(minTime,ts(trend.origin)) : minTime;
+    if (trend && trend.slope != null && Number.isFinite(Number(trend.slope))) {
+      const times=Array.from({length:361},(_,i)=>fanStart+(bounds.end-fanStart)*i/360);
+      if(trend.last_paid) times.push(ts(trend.last_paid));
+      data.registrations.filter(r=>ts(r.time)>=fanStart).forEach(r=>times.push(ts(r.time)));
+      for(const t of [...new Set(times)].sort((a,b)=>a-b)) {
+        const b=trendBounds(t);trendPts.push([t,b.lower,b.upper,b.buffer,b.central,b.bufferLower ?? b.lower]);
+      }
     }
     const ribbon = (name,lo,hi,fill) => {
       const poly=trendPts.map(p=>[p[0],convert(p[lo])]).concat([...trendPts].reverse().map(p=>[p[0],convert(p[hi])]));
-      return {name,type:'custom',silent:true,z:1,itemStyle:{color:fill},data:poly.length ? [0] : [],renderItem:(params,api)=>({type:'polygon',shape:{points:poly.map(p=>api.coord(p))},style:{fill},clipPath:{type:'rect',shape:{x:params.coordSys.x,y:params.coordSys.y,width:params.coordSys.width,height:params.coordSys.height}}})};
+      return {name,type:'custom',silent:true,z:name==='Uncertainty buffer' ? 0 : 1,itemStyle:{color:fill},data:poly.length ? [0] : [],renderItem:(params,api)=>({type:'polygon',shape:{points:poly.map(p=>api.coord(p))},style:{fill},clipPath:{type:'rect',shape:{x:params.coordSys.x,y:params.coordSys.y,width:params.coordSys.width,height:params.coordSys.height}}})};
     };
     // Prioritise window markers, then deduplicate dates. Daily labels need
     // at least 45px; desktop labels appear no more often than every two days.
@@ -133,19 +145,18 @@
     const ordered=[...(data.markers || [])].sort((a,b)=>Number(Boolean(b.edge))-Number(Boolean(a.edge)));
     const markerData=ordered.map(m=>{
       const t=ts(m.time), key=date(t), special=Boolean(m.edge)||/range|last/i.test(m.label);
-      const spaced=labelTimes.every(x=>Math.abs(x-t)/(bounds.end-bounds.start)*(innerWidth-140)> (mobile ? 64 : 55));
+      const spaced=m.edge==='conservative upper edge' || labelTimes.every(x=>Math.abs(x-t)/(bounds.end-bounds.start)*(innerWidth-140)> (mobile ? 64 : 55));
       const eligible=special || (!mobile && new Date(t).getUTCDate()%2===0 && !/minimum/i.test(m.label));
       const show=eligible && !seen.has(key) && spaced;
       if(show){seen.add(key);labelTimes.push(t);}
-      return {value:[t,convert(m.price),Number(m.price)],eventLabel:m.label,label:{show,formatter:m.edge==='buffer upper edge' ? `Safe · buffer\n${date(t)}` : m.edge ? `Conservative\n${date(t)}` : /range|last/i.test(m.label) ? `Range\n${date(t)}` : date(t),position:m.edge==='conservative upper edge' ? 'bottom' : 'top',color:c.muted,fontSize:9,distance:12}};
+      return {value:[t,convert(m.price),Number(m.price)],eventLabel:m.label,label:{show,formatter:m.edge==='buffer upper edge' ? `Safe · buffer\n${date(t)}` : m.edge ? `Main fan\n${date(t)}` : /range|last/i.test(m.label) ? `Range\n${date(t)}` : date(t),position:m.edge==='conservative upper edge' ? 'bottom' : 'top',color:c.muted,fontSize:9,distance:12}};
     });
     const series = [ribbon('Conservative band',1,2,theme==='dark' ? '#68a9fb50' : '#357fd74d'),
-      ribbon('Uncertainty buffer',2,3,theme==='dark' ? '#a7d9ff38' : '#75bce645'),
+      ribbon('Uncertainty buffer',5,3,theme==='dark' ? '#a7d9ff38' : '#75bce645'),
       {name:'Central trend',type:'line',data:trendPts.map(p=>[p[0],convert(p[4])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,type:'dotted',opacity:.65},z:2},
       {name:'Trend lower',type:'line',data:trendPts.map(p=>[p[0],convert(p[1])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,opacity:.45},z:1},
       {name:'Trend upper',type:'line',data:trendPts.map(p=>[p[0],convert(p[2])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,opacity:.45},z:1},
-      {name:'Registration cost',type:'line',data:points,symbol:'none',lineStyle:{color:c.accent,width:2.3},itemStyle:{color:c.accent},z:3,
-        markArea:band && Number.isFinite(Number(band.min)) ? {silent:true,itemStyle:{color:theme === 'dark' ? '#a5afbc15' : '#64748b13'},label:{show:!mobile,position:'insideTopLeft',color:c.dim,fontSize:10,formatter:`Last ${band.n || 8} registration range`},data:[[{yAxis:convert(band.min)},{yAxis:convert(band.max)}]]} : undefined},
+      {name:'Registration cost',type:'line',data:points,symbol:'none',lineStyle:{color:c.accent,width:2.3},itemStyle:{color:c.accent},z:3},
       {name:'Registrations',type:'scatter',data:data.registrations.map(r=>({value:[ts(r.time),convert(r.price),Number(r.price)],eventLabel:`Registration · ${r.inferred ? 'estimated' : 'observed'} price paid`,source:r.source})),symbolSize:mobile ? 7 : 8,itemStyle:{color:c.red,borderColor:c.panel,borderWidth:1.5},z:5},
       {name:'Decay projection',type:'line',data:projection,symbol:'none',lineStyle:{color:c.muted,width:1.7,type:'dashed'},itemStyle:{color:c.muted},z:3},
       {name:'Dated projection markers',type:'scatter',labelLayout:{hideOverlap:true},data:markerData,symbolSize:5,itemStyle:{color:c.muted},z:4},

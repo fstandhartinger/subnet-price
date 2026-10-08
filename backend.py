@@ -89,28 +89,31 @@ def trend_fit(events):
     slope = statistics.median(slopes)
     intercept = statistics.median([y-slope*x for x,y in xy])
     residuals = [y-(intercept+slope*x) for x,y in xy]
-    # Preserve the robust slope, but anchor today's fit to recent paid prices.
-    # The last-four median responds faster to rising competition; never lower
-    # either boundary relative to the previous 10th–90th residual band.
-    anchor = max(statistics.median(r['price'] for r in recent),
-                 statistics.median(r['price'] for r in recent[-4:]))
-    # Add half the old residual spread as a competitive-price buffer, so
-    # the upper-edge estimate also moves earlier when the recent anchor
-    # is already below a rising fit.
-    buffer = (quantile(residuals,.9)-quantile(residuals,.1))/2
-    uplift = max(buffer, anchor-(intercept+slope*xy[-1][0]))
-    return dict(origin=origin, slope=slope, intercept=intercept+uplift,
-                low=quantile(residuals,.5),
-                high=max(quantile(residuals,.9), quantile(residuals,.5)+quantile(residuals,.9)-quantile(residuals,.1)),
-                minimum_width_fraction=.30,
-                buffer_extra=max(statistics.pstdev(residuals), quantile(residuals,.95)-quantile(residuals,.9)),
-                minimum_buffer_fraction=.15, central_intercept=intercept,
-                n=len(recent), policy='conservative', uplift=uplift,
-                residual_percentiles=[50,90], recent_anchor=anchor,
-                competitive_buffer=buffer)
+    # Full residual envelope contains every recent registration, including outliers.
+    scale = statistics.median(y for _,y in xy)
+    margin = .02*scale
+    half_width = .15*scale
+    low = min(min(residuals)-margin, -half_width)
+    high = max(max(residuals)+margin, half_width)
+    variation = statistics.median(abs(b['price']-a['price']) for a,b in zip(recent,recent[1:]))
+    # Gentle quadratic fan: one observed typical move (at least 10%) over 14 days.
+    curvature = max(variation,.10*scale)/(14**2)
+    return dict(origin=origin, slope=slope, intercept=intercept,
+                low=low, high=high, last_paid=recent[-1]['time'],
+                fan_curvature=curvature, buffer_multiplier=1.7,
+                buffer_extra=max(statistics.pstdev(residuals),.10*scale),
+                central_intercept=intercept, n=len(recent), policy='fan')
 
 
 def trend_bounds(trend, t):
+    if trend.get('policy') == 'fan':
+        central = trend['intercept'] + trend['slope']*(t-trend['origin'])/DAY
+        dt = max(0,(t-trend['last_paid'])/DAY)
+        widening = trend['fan_curvature']*dt*dt
+        lower, upper = central+trend['low']-widening, central+trend['high']+widening
+        extra = trend['buffer_extra'] + (trend['buffer_multiplier']-1)*widening
+        return dict(central=max(0,central),lower=max(0,lower),upper=max(0,upper),
+                    buffer=max(0,upper+extra),buffer_lower=max(0,lower-extra))
     base = trend['intercept'] + trend['slope']*(t-trend['origin'])/DAY
     lower = base + trend['low']
     upper = max(base+trend['high'], lower+max(0,base)*trend.get('minimum_width_fraction',0))
@@ -144,9 +147,30 @@ def project(current, rate, bands, trend, floor=0):
             if lower <= price <= upper:
                 label=label.replace('Enters ', 'Already in ')
             markers.append(dict(time=t,price=cost(t),label=label))
-    if bands: entry(bands['min'],bands['max'],0,'Enters last 8 registration range')
+    if bands and (not trend or trend.get('policy') != 'fan'): entry(bands['min'],bands['max'],0,'Enters last 8 registration range')
     if trend:
-        if trend.get('policy') == 'conservative':
+        if trend.get('policy') == 'fan':
+            # On each side of last_paid, decay minus upper fan is concave.
+            # A positive start and positive end cannot hide an earlier crossing.
+            for key,edge,label in [('upper','conservative upper edge','Enters main fan'),
+                                   ('buffer','buffer upper edge','Earliest likely buffer entry · safe estimate')]:
+                cuts=sorted(set([now,end]+([trend['last_paid']] if now<trend['last_paid']<end else [])))
+                gap=lambda t: cost(t)-trend_bounds(trend,t)[key]
+                for left,right in zip(cuts,cuts[1:]):
+                    if gap(left)<=0:
+                        touch=left
+                    elif gap(right)>0:
+                        continue
+                    else:
+                        for _ in range(60):
+                            mid=(left+right)/2
+                            if gap(mid)>0: left=mid
+                            else: right=mid
+                        touch=right
+                    t=int(touch)
+                    markers.append(dict(time=t,price=cost(t),label=label if t>now else 'Safe estimate reached · '+edge,edge=edge))
+                    break
+        elif trend.get('policy') == 'conservative':
             # Upper edges are maxima of affine lines. First touch is the
             # earliest valid root of any branch (including an already-reached edge).
             base=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
