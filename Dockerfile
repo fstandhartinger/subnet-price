@@ -3,6 +3,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 WORKDIR /app
 COPY backend.py /app/backend.py
 COPY public /app/public
+COPY build_assets.py /app/build_assets.py
+RUN python build_assets.py public && rm build_assets.py
 ENV PORT=8000 CACHE_DIR=/tmp/subnet-price PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 10001:10001
 EXPOSE 8000
