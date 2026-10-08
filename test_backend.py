@@ -39,7 +39,7 @@ class MathTests(unittest.TestCase):
         events=[dict(time=i*b.DAY,price=100+10*i+(500 if i==4 else 0)) for i in range(8)]
         trend=b.trend_fit(events)
         self.assertEqual(trend['slope'],10)
-        self.assertEqual(trend['intercept'],100)
+        self.assertAlmostEqual(trend['intercept']-trend['uplift'],100)
         self.assertEqual(trend['low'],0)
 
     def test_crossings_include_first_moving_band_entry(self):
@@ -50,6 +50,34 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual((crossing['time']-current['time'])/b.DAY,40/15,places=7)
         self.assertAlmostEqual(next(m for m in markers if 'last' in m['label'])['price'],30)
         self.assertEqual(projection[-1][1],0)
+
+    def test_conservative_band_never_lowers_previous_edges(self):
+        for prices in ([100,120,90,140,110,180,130,220],
+                       [800,700,600,500,400,300,200,100]):
+            events=[dict(time=i*b.DAY,price=p) for i,p in enumerate(prices)]
+            trend=b.trend_fit(events)
+            slope=trend['slope']
+            intercept=b.statistics.median(p-slope*i for i,p in enumerate(prices))
+            residuals=[p-intercept-slope*i for i,p in enumerate(prices)]
+            self.assertGreaterEqual(trend['intercept']+trend['low'],intercept+b.quantile(residuals,.1))
+            self.assertGreaterEqual(trend['intercept']+trend['high'],intercept+b.quantile(residuals,.9))
+            self.assertGreater(trend['intercept']+trend['high'],intercept+b.quantile(residuals,.9))
+            self.assertGreaterEqual(trend['intercept']+slope*7,trend['recent_anchor'])
+
+    def test_safe_entry_is_upper_edge_and_earlier_than_central_entry(self):
+        trend=dict(origin=0,slope=5,intercept=50,low=0,high=20,policy='conservative')
+        _,markers=b.project(dict(time=0,price=100),10,None,trend)
+        safe=next(m for m in markers if 'safe estimate' in m['label'])
+        self.assertAlmostEqual(safe['time']/b.DAY,2)
+        self.assertLess(safe['time']/b.DAY,(100-50)/15)
+        self.assertEqual(safe['price'],80)
+
+    def test_safe_threshold_already_reached_including_below_band(self):
+        trend=dict(origin=0,slope=5,intercept=50,low=0,high=20,policy='conservative')
+        for price in (60,40):
+            _,markers=b.project(dict(time=0,price=price),10,None,trend)
+            safe=next(m for m in markers if 'Safe estimate reached' in m['label'])
+            self.assertEqual(safe['time'],0)
 
     def test_projection_stops_at_actual_chain_floor(self):
         points,markers=b.project(dict(time=0,price=101),10,None,None,floor=1)

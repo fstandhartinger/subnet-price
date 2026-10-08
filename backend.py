@@ -89,7 +89,21 @@ def trend_fit(events):
     slope = statistics.median(slopes)
     intercept = statistics.median([y-slope*x for x,y in xy])
     residuals = [y-(intercept+slope*x) for x,y in xy]
-    return dict(origin=origin, slope=slope, intercept=intercept, low=quantile(residuals,.1), high=quantile(residuals,.9), n=len(recent))
+    # Preserve the robust slope, but anchor today's fit to recent paid prices.
+    # The last-four median responds faster to rising competition; never lower
+    # either boundary relative to the previous 10th–90th residual band.
+    anchor = max(statistics.median(r['price'] for r in recent),
+                 statistics.median(r['price'] for r in recent[-4:]))
+    # Add half the old residual spread as a competitive-price buffer, so
+    # the upper-edge estimate also moves earlier when the recent anchor
+    # is already below a rising fit.
+    buffer = (quantile(residuals,.9)-quantile(residuals,.1))/2
+    uplift = max(buffer, anchor-(intercept+slope*xy[-1][0]))
+    return dict(origin=origin, slope=slope, intercept=intercept+uplift,
+                low=quantile(residuals,.5), high=quantile(residuals,.9),
+                n=len(recent), policy='conservative', uplift=uplift,
+                residual_percentiles=[50,90], recent_anchor=anchor,
+                competitive_buffer=buffer)
 
 
 def project(current, rate, bands, trend, floor=0):
@@ -120,7 +134,11 @@ def project(current, rate, bands, trend, floor=0):
     if bands: entry(bands['min'],bands['max'],0,'Enters last 8 registration range')
     if trend:
         center=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
-        entry(center+trend['low'],center+trend['high'],trend['slope'],'Enters trend band')
+        if trend.get('policy') == 'conservative' and price <= center+trend['high']:
+            markers.append(dict(time=now,price=price,label='Safe estimate reached · trend upper edge'))
+        else:
+            entry(center+trend['low'],center+trend['high'],trend['slope'],
+                  'Earliest likely trend entry · safe estimate' if trend.get('policy') == 'conservative' else 'Enters trend band')
     if cost(end)<=floor+1e-8:
         markers.append(dict(time=int(end),price=floor,label='Chain minimum reached'))
     projection=[[now,price]]+[[m['time'],m['price']] for m in markers]+[[int(end),floor if cost(end)<=floor+1e-8 else cost(end)]]
