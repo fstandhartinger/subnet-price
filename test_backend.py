@@ -51,6 +51,12 @@ class MathTests(unittest.TestCase):
         self.assertAlmostEqual(next(m for m in markers if 'last' in m['label'])['price'],30)
         self.assertEqual(projection[-1][1],0)
 
+    def test_projection_stops_at_actual_chain_floor(self):
+        points,markers=b.project(dict(time=0,price=101),10,None,None,floor=1)
+        self.assertEqual(points[-1],[10*b.DAY,1])
+        self.assertEqual(markers[-1]['label'],'Chain minimum reached')
+        self.assertTrue(all(p[1]>=1 for p in points))
+
     def test_no_crossing_for_diverging_band_and_bounded_projection(self):
         current=dict(time=0,price=10000)
         projection,markers=b.project(current,1,None,dict(origin=0,slope=-2,intercept=50,low=-10,high=10))
@@ -61,7 +67,8 @@ class MathTests(unittest.TestCase):
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=b.Store(self.tmp.name)
-    def tearDown(self): self.tmp.cleanup()
+        self.floor_patch=patch.object(b,'fetch_chain_floor',return_value=1); self.floor_patch.start()
+    def tearDown(self): self.floor_patch.stop(); self.tmp.cleanup()
     def test_current_chain_gap_never_creates_registration(self):
         now=int(b.time.time()*1000)
         self.store.state.update(rows=[row(now/b.DAY-2,600),row(now/b.DAY-1,500)],history_at=now,current=dict(time=now,price=1000,source='chain'))

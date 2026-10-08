@@ -17,6 +17,8 @@ import urllib.request
 DAY = 86400000
 HISTORY_INTERVAL = 10800
 CHAIN_INTERVAL = 300
+# Twox128(SubtensorModule) + Twox128(NetworkMinLockCost), verified Finney storage.
+FLOOR_STORAGE_KEY = '0x658faa385070e074c85bf6b568cf0555af4319a20ed58ed2c549e6b6ea25fe88'
 ENDPOINTS = ('https://entrypoint-finney.opentensor.ai:443', 'https://lite.chain.opentensor.ai:443')
 
 
@@ -90,12 +92,12 @@ def trend_fit(events):
     return dict(origin=origin, slope=slope, intercept=intercept, low=quantile(residuals,.1), high=quantile(residuals,.9), n=len(recent))
 
 
-def project(current, rate, bands, trend):
+def project(current, rate, bands, trend, floor=0):
     if not current or rate <= 0:
         return [], []
     now, price = current['time'], current['price']
-    end = now + min(price/rate, 60)*DAY
-    def cost(t): return max(0, price-rate*(t-now)/DAY)
+    end = now + min(max(0,price-floor)/rate, 60)*DAY
+    def cost(t): return max(floor, price-rate*(t-now)/DAY)
     markers = []
     day = (now // DAY + 1)*DAY
     while day < end:
@@ -117,7 +119,9 @@ def project(current, rate, bands, trend):
     if trend:
         center=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
         entry(center+trend['low'],center+trend['high'],trend['slope'],'Enters trend band')
-    projection=[[now,price]]+[[m['time'],m['price']] for m in markers]+[[int(end),cost(end)]]
+    if cost(end)<=floor+1e-8:
+        markers.append(dict(time=int(end),price=floor,label='Chain minimum reached'))
+    projection=[[now,price]]+[[m['time'],m['price']] for m in markers]+[[int(end),floor if cost(end)<=floor+1e-8 else cost(end)]]
     return sorted(projection), sorted(markers,key=lambda m:m['time'])
 
 
@@ -171,11 +175,25 @@ def fetch_chain():
     raise ValueError('Chain endpoints unavailable')
 
 
+def fetch_chain_floor():
+    for endpoint in ENDPOINTS:
+        try:
+            result=request_json(endpoint,body={'jsonrpc':'2.0','id':2,'method':'state_getStorage','params':[FLOOR_STORAGE_KEY]})['result']
+            raw=bytes.fromhex(result.removeprefix('0x'))
+            if len(raw) not in (8,16): raise ValueError('Unexpected minimum SCALE length')
+            floor=int.from_bytes(raw,'little')/1e9
+            if not math.isfinite(floor) or floor<0: raise ValueError('Invalid chain minimum')
+            return floor
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):
+            continue
+    raise ValueError('Chain minimum unavailable')
+
+
 class Store:
     def __init__(self, cache_dir=None):
         self.lock=threading.Lock()
         self.cache=Path(cache_dir or os.getenv('CACHE_DIR','/tmp/subnet-price'))/'cache.json'
-        self.state=dict(rows=[],current=None,history_at=None,usd=None,usd_at=None)
+        self.state=dict(rows=[],current=None,history_at=None,usd=None,usd_at=None,floor=None,floor_at=None)
         self.errors={}
         self.due={'chain':0,'history':0,'usd':0}
         self.failures={k:0 for k in self.due}
@@ -190,7 +208,10 @@ class Store:
     def refresh(self, kind):
         now=int(time.time()*1000)
         try:
-            if kind=='chain': update={'current':dict(time=now,price=fetch_chain(),source='Finney chain runtime API')}
+            if kind=='chain':
+                update={'current':dict(time=now,price=fetch_chain(),source='Finney chain runtime API')}
+                try: update.update(floor=fetch_chain_floor(),floor_at=now)
+                except ValueError: pass
             else:
                 key=os.getenv('TAOSTATS_API') or os.getenv('TAOSTATS_API_KEY')
                 if not key: raise ValueError('Taostats server credential unavailable')
@@ -210,7 +231,7 @@ class Store:
                     if not self.chain_samples or quote['time']-self.chain_samples[-1]['time']>=60000:
                         self.chain_samples=(self.chain_samples+[quote])[-12:]
                     raw_pts,_,_=history_analysis(self.state['rows'])
-                    if raw_pts and quote['price']>raw_pts[-1][1]*1.3 and time.time()-self.last_history_attempt>60:
+                    if raw_pts and quote['price']>raw_pts[-1][1]*1.3 and time.time()-self.last_history_attempt>60 and self.failures['history']==0:
                         self.due['history']=min(self.due['history'],time.time())
                 self.state.update(update)
                 self.errors.pop(kind,None)
@@ -250,14 +271,19 @@ class Store:
         elif now-(state['history_at'] or 0)>6*3600000: warnings.append('History cache is stale.')
         if state['usd'] is None: warnings.append('TAO/USD conversion unavailable.')
         elif now-(state['usd_at'] or 0)>3600000: warnings.append('TAO/USD conversion is stale.')
+        priced_times={e['time'] for e in events}
+        unpriced=sum(1 for r in state['rows'] if r.get('is_purchase') is True and timestamp(r['timestamp']) not in priced_times)
+        if unpriced: warnings.append(f'{unpriced} historical purchase flags could not be priced from the sampled history and are excluded from the bands.')
         recent=events[-8:]
         bands=dict(min=min(r['price'] for r in recent),max=max(r['price'] for r in recent),n=len(recent)) if recent else None
         trend=trend_fit(events)
-        projection,markers=project(current,rate,bands,trend) if current and now-current['time']<=900000 else ([],[])
+        if state['floor'] is None: warnings.append('Chain minimum unavailable; projection paused.')
+        elif now-(state['floor_at'] or 0)>3600000: warnings.append('Chain minimum uses its last known value.')
+        projection,markers=project(current,rate,bands,trend,state['floor']) if current and now-current['time']<=900000 and state['floor'] is not None else ([],[])
         if current and pts and current['price']>pts[-1][1]*1.3:
             warnings.append('Chain quote has risen since cached history; recent registrations may not yet be indexed. Projection paused.')
             projection,markers=[],[]
-        return dict(pts=pts,registrations=events,rate=rate,usd=state['usd'],built=now,current_at=current['time'] if current else None,history_at=state['history_at'],usd_at=state['usd_at'],current=current,trend=trend,bands=bands,projection=projection,markers=markers,warnings=warnings,synthetic_points=[dict(time=e['time']-1,source='Inferred pre-jump quote for sawtooth display') for e in events if e['inferred']])
+        return dict(pts=pts,registrations=events,rate=rate,usd=state['usd'],built=now,current_at=current['time'] if current else None,history_at=state['history_at'],usd_at=state['usd_at'],current=current,floor=state['floor'],floor_at=state['floor_at'],trend=trend,bands=bands,projection=projection,markers=markers,warnings=warnings,synthetic_points=[dict(time=e['time']-1,source='Inferred pre-jump quote for sawtooth display') for e in events if e['inferred']])
 
 
 class Server(http.server.ThreadingHTTPServer):

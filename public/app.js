@@ -55,6 +55,7 @@
     $('usd-rate').textContent = usdAvailable() ? `1 TAO ≈ $${num(rate(), 2)} · All dates in UTC` : 'TAO/USD currently unavailable · All dates in UTC';
     const referenceMarkers = (data.markers || []).filter(m => /trend|range|last/i.test(m.label));
     $('reference-windows').textContent = referenceMarkers.length ? `Conditional reference windows · ${referenceMarkers.map(m => `${/trend/i.test(m.label) ? 'Trend entry' : 'Last 8 range entry'}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
+    $('floor-explanation').textContent = data.floor != null && Number.isFinite(Number(data.floor)) ? `The dashed path stops at the chain minimum of ${num(data.floor, 2)} TAO (read ${age(data.floor_at)}).` : 'The chain minimum is currently unavailable; any shown endpoint is illustrative.';
     $('source-details').textContent = `Current cost: Finney chain · History & TAO/USD: Taostats · ${data.registrations.length} observed registrations`;
   }
   function viewBounds() {
