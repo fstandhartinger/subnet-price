@@ -40,8 +40,8 @@
     $('current-detail').textContent = `${unit === 'tao' ? (usdAvailable() ? `≈ $${num(current.price * rate(), 0)} USD` : 'USD unavailable') : `${num(current.price, 2)} TAO`} · Chain reading ${age(data.current_at ?? current.time)}`;
     $('decay-value').innerHTML = data.rate == null ? '—' : `${unit === 'usd' ? '$' : ''}${num(convert(Math.abs(Number(data.rate))), 1)}<small>${unit === 'tao' ? 'TAO / day' : '/ day'}</small>`;
     const entry = (data.markers || []).find(m => /trend/i.test(m.label) && ts(m.time) >= ts(current.time));
-    $('crossing-value').textContent = entry ? date(entry.time) : !data.projection.length ? 'Unavailable' : 'No crossing';
-    $('crossing-detail').textContent = entry ? `${date(entry.time, true)} UTC · if decay continues` : !data.projection.length ? 'Projection is currently unavailable' : 'No future trend-band entry in this projection';
+    $('crossing-value').textContent = entry ? (/Already/.test(entry.label) ? 'Already inside' : date(entry.time)) : !data.projection.length ? 'Unavailable' : 'No crossing';
+    $('crossing-detail').textContent = entry ? (/Already/.test(entry.label) ? 'Current quote is already inside the trend band' : `${date(entry.time, true)} UTC · if decay continues`) : !data.projection.length ? 'Projection is currently unavailable' : 'No future trend-band entry in this projection';
     $('chart-subtitle').textContent = `Historical cost and conditional projection · UTC${unit === 'usd' ? ' · latest TAO/USD conversion' : ''}`;
     const stale = Date.now() - ts(data.current_at ?? current.time) > 20 * 60000;
     $('status-dot').className = `status-dot ${stale || fetchError ? 'stale' : 'fresh'}`;
@@ -54,7 +54,7 @@
     $('freshness-details').textContent = `Chain: ${age(data.current_at ?? current.time)} · History: ${age(data.history_at)} · TAO/USD: ${age(data.usd_at)}. Current cost refreshes about every 5 minutes.`;
     $('usd-rate').textContent = usdAvailable() ? `1 TAO ≈ $${num(rate(), 2)} · All dates in UTC` : 'TAO/USD currently unavailable · All dates in UTC';
     const referenceMarkers = (data.markers || []).filter(m => /trend|range|last/i.test(m.label));
-    $('reference-windows').textContent = referenceMarkers.length ? `Conditional reference windows · ${referenceMarkers.map(m => `${/trend/i.test(m.label) ? 'Trend entry' : 'Last 8 range entry'}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
+    $('reference-windows').textContent = referenceMarkers.length ? `Conditional reference windows · ${referenceMarkers.map(m => `${/Already/.test(m.label) ? (/trend/i.test(m.label) ? 'Already in trend band' : 'Already in last 8 range') : (/trend/i.test(m.label) ? 'Trend entry' : 'Last 8 range entry')}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
     $('floor-explanation').textContent = data.floor != null && Number.isFinite(Number(data.floor)) ? `The dashed path stops at the chain minimum of ${num(data.floor, 2)} TAO (read ${age(data.floor_at)}).` : 'The chain minimum is currently unavailable; any shown endpoint is illustrative.';
     $('source-details').textContent = `Current cost: Finney chain · History & TAO/USD: Taostats · ${data.registrations.length} observed registrations`;
   }
