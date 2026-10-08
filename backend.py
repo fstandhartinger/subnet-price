@@ -100,10 +100,23 @@ def trend_fit(events):
     buffer = (quantile(residuals,.9)-quantile(residuals,.1))/2
     uplift = max(buffer, anchor-(intercept+slope*xy[-1][0]))
     return dict(origin=origin, slope=slope, intercept=intercept+uplift,
-                low=quantile(residuals,.5), high=quantile(residuals,.9),
+                low=quantile(residuals,.5),
+                high=max(quantile(residuals,.9), quantile(residuals,.5)+quantile(residuals,.9)-quantile(residuals,.1)),
+                minimum_width_fraction=.30,
+                buffer_extra=max(statistics.pstdev(residuals), quantile(residuals,.95)-quantile(residuals,.9)),
+                minimum_buffer_fraction=.15, central_intercept=intercept,
                 n=len(recent), policy='conservative', uplift=uplift,
                 residual_percentiles=[50,90], recent_anchor=anchor,
                 competitive_buffer=buffer)
+
+
+def trend_bounds(trend, t):
+    base = trend['intercept'] + trend['slope']*(t-trend['origin'])/DAY
+    lower = base + trend['low']
+    upper = max(base+trend['high'], lower+max(0,base)*trend.get('minimum_width_fraction',0))
+    buffer = upper + max(trend.get('buffer_extra',0), max(0,base)*trend.get('minimum_buffer_fraction',0))
+    central = trend.get('central_intercept',trend['intercept']) + trend['slope']*(t-trend['origin'])/DAY
+    return dict(central=max(0,central), lower=max(0,lower), upper=max(0,upper), buffer=max(0,buffer))
 
 
 def project(current, rate, bands, trend, floor=0):
@@ -133,12 +146,29 @@ def project(current, rate, bands, trend, floor=0):
             markers.append(dict(time=t,price=cost(t),label=label))
     if bands: entry(bands['min'],bands['max'],0,'Enters last 8 registration range')
     if trend:
-        center=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
-        if trend.get('policy') == 'conservative' and price <= center+trend['high']:
-            markers.append(dict(time=now,price=price,label='Safe estimate reached · trend upper edge'))
+        if trend.get('policy') == 'conservative':
+            # Upper edges are maxima of affine lines. First touch is the
+            # earliest valid root of any branch (including an already-reached edge).
+            base=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
+            slope=trend['slope']
+            width=trend.get('minimum_width_fraction',0)
+            extra=trend.get('buffer_extra',0)
+            margin=trend.get('minimum_buffer_fraction',0)
+            branches=[(base+trend['high'],slope),
+                      (base+trend['low'],slope),
+                      (base*(1+width)+trend['low'],slope*(1+width))]
+            def first_touch(lines, label, edge):
+                roots=[0 if price<=v else (price-v)/(rate+m) for v,m in lines if price<=v or rate+m>0]
+                roots=[x for x in roots if 0<=x<=(end-now)/DAY]
+                if roots:
+                    delta=min(roots); t=int(now+delta*DAY)
+                    markers.append(dict(time=t,price=cost(t),label=(label if delta else 'Safe estimate reached · '+edge),edge=edge))
+            first_touch(branches,'Earliest likely trend entry · conservative upper edge','conservative upper edge')
+            buffered=[(v+extra,m) for v,m in branches]+[(v+base*margin,m+slope*margin) for v,m in branches]
+            first_touch(buffered,'Earliest likely buffer entry · safe estimate','buffer upper edge')
         else:
-            entry(center+trend['low'],center+trend['high'],trend['slope'],
-                  'Earliest likely trend entry · safe estimate' if trend.get('policy') == 'conservative' else 'Enters trend band')
+            center=trend['intercept']+trend['slope']*(now-trend['origin'])/DAY
+            entry(center+trend['low'],center+trend['high'],trend['slope'],'Enters trend band')
     if cost(end)<=floor+1e-8:
         markers.append(dict(time=int(end),price=floor,label='Chain minimum reached'))
     projection=[[now,price]]+[[m['time'],m['price']] for m in markers]+[[int(end),floor if cost(end)<=floor+1e-8 else cost(end)]]

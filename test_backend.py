@@ -79,6 +79,24 @@ class MathTests(unittest.TestCase):
             safe=next(m for m in markers if 'Safe estimate reached' in m['label'])
             self.assertEqual(safe['time'],0)
 
+    def test_visible_minimum_width_and_buffer_despite_exact_fit(self):
+        trend=b.trend_fit([dict(time=i*b.DAY,price=600+10*i) for i in range(8)])
+        bounds=b.trend_bounds(trend,8*b.DAY)
+        self.assertGreaterEqual(bounds['upper']-bounds['lower'],.3*bounds['lower']-1e-8)
+        self.assertGreaterEqual(bounds['buffer']-bounds['upper'],.15*bounds['lower']-1e-8)
+        self.assertGreaterEqual(bounds['lower'],bounds['central'])
+
+    def test_buffer_crossing_precedes_conservative_and_matches_price(self):
+        for slope in (10,-10):
+            trend=dict(origin=0,slope=slope,intercept=600,central_intercept=590,low=0,high=10,
+                       minimum_width_fraction=.3,buffer_extra=80,minimum_buffer_fraction=.15,policy='conservative')
+            _,markers=b.project(dict(time=0,price=1200),60,None,trend)
+            buffered=next(m for m in markers if m.get('edge')=='buffer upper edge')
+            conservative=next(m for m in markers if m.get('edge')=='conservative upper edge')
+            self.assertLess(buffered['time'],conservative['time'])
+            self.assertAlmostEqual(buffered['price'],b.trend_bounds(trend,buffered['time'])['buffer'],places=5)
+            self.assertAlmostEqual(conservative['price'],b.trend_bounds(trend,conservative['time'])['upper'],places=5)
+
     def test_projection_stops_at_actual_chain_floor(self):
         points,markers=b.project(dict(time=0,price=101),10,None,None,floor=1)
         self.assertEqual(points[-1],[10*b.DAY,1])

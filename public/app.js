@@ -25,6 +25,12 @@
     const c = getComputedStyle(document.documentElement);
     return Object.fromEntries(['text','muted','dim','border','grid','accent','blue','red','panel'].map(key=>[key,c.getPropertyValue(`--${key}`).trim()]));
   };
+  function trendBounds(t) {
+    const tr = data.trend, base = Number(tr.intercept) + Number(tr.slope) * (t-ts(tr.origin))/DAY;
+    const lower = base + Number(tr.low);
+    const upper = Math.max(base+Number(tr.high), lower+Math.max(0,base)*Number(tr.minimum_width_fraction || 0));
+    return {central:Math.max(0,Number(tr.central_intercept ?? tr.intercept)+Number(tr.slope)*(t-ts(tr.origin))/DAY),lower:Math.max(0,lower),upper:Math.max(0,upper),buffer:Math.max(0,upper+Math.max(Number(tr.buffer_extra || 0),Math.max(0,base)*Number(tr.minimum_buffer_fraction || 0)))};
+  }
   function applyTheme() {
     document.documentElement.dataset.theme = theme;
     $('theme-icon').textContent = theme === 'dark' ? '☀' : '☾';
@@ -39,9 +45,9 @@
     $('current-value').innerHTML = unit === 'tao' ? `${num(current.price, 2)}<small>TAO</small>` : `$${num(convert(current.price), 0)}<small>USD</small>`;
     $('current-detail').textContent = `${unit === 'tao' ? (usdAvailable() ? `≈ $${num(current.price * rate(), 0)} USD` : 'USD unavailable') : `${num(current.price, 2)} TAO`} · Chain reading ${age(data.current_at ?? current.time)}`;
     $('decay-value').innerHTML = data.rate == null ? '—' : `${unit === 'usd' ? '$' : ''}${num(convert(Math.abs(Number(data.rate))), 1)}<small>${unit === 'tao' ? 'TAO / day' : '/ day'}</small>`;
-    const entry = (data.markers || []).find(m => /trend/i.test(m.label) && ts(m.time) >= ts(current.time));
+    const entry = (data.markers || []).find(m => m.edge === 'buffer upper edge' && ts(m.time) >= ts(current.time));
     $('crossing-value').textContent = entry ? (/Already|reached/.test(entry.label) ? 'Reached now' : date(entry.time)) : !data.projection.length ? 'Unavailable' : 'No crossing';
-    $('crossing-detail').textContent = entry ? (/Already|reached/.test(entry.label) ? 'Current quote is at or below the conservative upper edge' : `${date(entry.time, true)} UTC · safe estimate, if decay continues`) : !data.projection.length ? 'Projection is currently unavailable' : 'No future trend-band entry in this projection';
+    $('crossing-detail').textContent = entry ? (/Already|reached/.test(entry.label) ? 'Current quote is at or below the buffer upper edge' : `${date(entry.time, true)} UTC · buffer upper edge · if decay continues`) : !data.projection.length ? 'Projection is currently unavailable' : 'No future trend-band entry in this projection';
     $('chart-subtitle').textContent = `Historical cost and conditional projection · UTC${unit === 'usd' ? ' · latest TAO/USD conversion' : ''}`;
     const stale = Date.now() - ts(data.current_at ?? current.time) > 20 * 60000;
     $('status-dot').className = `status-dot ${stale || fetchError ? 'stale' : 'fresh'}`;
@@ -53,8 +59,11 @@
     $('notice').textContent = [...new Set(warnings)].join(' ');
     $('freshness-details').textContent = `Chain: ${age(data.current_at ?? current.time)} · History: ${age(data.history_at)} · TAO/USD: ${age(data.usd_at)}. Current cost refreshes about every 5 minutes.`;
     $('usd-rate').textContent = usdAvailable() ? `1 TAO ≈ $${num(rate(), 2)} · All dates in UTC` : 'TAO/USD currently unavailable · All dates in UTC';
-    const referenceMarkers = (data.markers || []).filter(m => /trend|range|last/i.test(m.label));
-    $('reference-windows').textContent = referenceMarkers.length ? `Conditional reference windows · ${referenceMarkers.map(m => `${/Already|reached/.test(m.label) ? (/trend/i.test(m.label) ? 'Safe trend threshold reached' : 'Already in last 8 range') : (/trend/i.test(m.label) ? 'Earliest likely trend entry (safe estimate)' : 'Last 8 range entry')}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
+    const referenceMarkers = (data.markers || []).filter(m => m.edge || /range|last/i.test(m.label));
+    $('reference-windows').textContent = referenceMarkers.length ? `Conditional windows · ${referenceMarkers.map(m => `${m.edge === 'buffer upper edge' ? 'Earliest likely · buffer upper edge' : m.edge ? 'Conservative upper edge' : 'Last 8 range'}: ${date(m.time, true)} UTC`).join(' · ')}` : 'Conditional reference windows: currently unavailable.';
+    const b = data.trend ? trendBounds(ts(current.time)) : null;
+    $('chart-now').textContent = `Now ≈ ${price(current.price)}${unit === 'tao' && usdAvailable() ? ` (≈ $${num(current.price*rate())})` : ''}`;
+    $('budget-detail').textContent = b ? `At the current time: budget for up to ${num(b.buffer,0)} TAO${usdAvailable() ? ` ≈ $${num(b.buffer*rate(),0)}` : ''} · buffer upper edge` : 'Budget buffer currently unavailable';
     $('floor-explanation').textContent = data.floor != null && Number.isFinite(Number(data.floor)) ? `The dashed path stops at the chain minimum of ${num(data.floor, 2)} TAO (read ${age(data.floor_at)}).` : 'The chain minimum is currently unavailable; any shown endpoint is illustrative.';
     $('source-details').textContent = `Current cost: Finney chain · History & TAO/USD: Taostats · ${data.registrations.length} observed registrations`;
   }
@@ -66,7 +75,7 @@
   }
   function tooltip(params) {
     const entries = Array.isArray(params) ? params : [params];
-    const useful = entries.filter(p => !['Trend lower','Trend upper','Trend band','Last 8 range'].includes(p.seriesName));
+    const useful = entries.filter(p => !['Trend lower','Trend upper','Conservative band','Uncertainty buffer','Central trend','Last 8 range'].includes(p.seriesName));
     if (!useful.length) return '';
     const x = useful[0].value?.[0];
     let html = `<div class="tooltip-title">${escape(date(x, true))} UTC</div>`;
@@ -80,6 +89,11 @@
       if (p.data?.source) html += `<div class="tooltip-note">${escape(p.data.source)}</div>`;
     }
     if (useful.some(p => /projection|decay|band entry/i.test(p.seriesName + (p.data?.eventLabel || '')))) html += '<div class="tooltip-note">Conditional on no new registration and the current decay continuing.</div>';
+    if (data.trend && Number.isFinite(Number(x))) {
+      const b=trendBounds(Number(x));
+      html += `<div class="tooltip-note">Reference estimates at this time</div>`;
+      for (const [label,v] of [['Central estimate',b.central],['Conservative upper edge',b.upper],['Budget for up to · buffer upper',b.buffer]]) html += `<div class="tooltip-row"><span>${label}</span><strong>${num(v)} TAO${usdAvailable() ? ` ≈ $${num(v*rate())}` : ''}</strong></div>`;
+    }
     return html;
   }
   function scaleVisibleYAxis() {
@@ -89,7 +103,7 @@
     const start = Number(zoom?.startValue ?? bounds.start), end = Number(zoom?.endValue ?? bounds.end);
     const values = [...data.pts, ...data.projection, ...data.registrations.map(r=>[r.time,r.price]), [data.current.time,data.current.price]]
       .filter(p=>ts(p[0])>=start && ts(p[0])<=end).map(p=>Number(p[1]));
-    if (data.trend) for (const t of [start,end]) values.push(Math.max(0,Number(data.trend.intercept)+Number(data.trend.slope)*(t-ts(data.trend.origin))/DAY+Number(data.trend.high)));
+    if (data.trend) for (const t of [start,end]) values.push(trendBounds(t).buffer);
     if (data.bands) values.push(Number(data.bands.max));
     const step = unit === 'usd' ? 10000 : 100;
     const max = Math.ceil(convert(Math.max(1,...values.filter(Number.isFinite)))*1.12/step)*step;
@@ -106,21 +120,38 @@
     const minTime = points.length ? points[0][0] : bounds.start;
     if (trend && trend.slope != null && Number.isFinite(Number(trend.slope))) for (let i = 0; i <= 120; i++) {
       const t = minTime + (bounds.end - minTime) * i / 120;
-      const center = Number(trend.intercept) + Number(trend.slope) * (t - ts(trend.origin)) / DAY;
-      trendPts.push([t, Math.max(0, center + Number(trend.low)), Math.max(0, center + Number(trend.high))]);
+      const b=trendBounds(t);
+      trendPts.push([t,b.lower,b.upper,b.buffer,b.central]);
     }
-    const trendPoly = trendPts.map(p=>[p[0],convert(p[1])]).concat([...trendPts].reverse().map(p=>[p[0],convert(p[2])]));
-    const series = [{name:'Trend band',type:'custom',silent:true,z:0,data:trendPoly.length ? [0] : [],renderItem:(params,api)=>({type:'polygon',shape:{points:trendPoly.map(p=>api.coord(p))},style:{fill:theme === 'dark' ? '#68a9fb22' : '#357fd71c'},clipPath:{type:'rect',shape:{x:params.coordSys.x,y:params.coordSys.y,width:params.coordSys.width,height:params.coordSys.height}}})},
+    const ribbon = (name,lo,hi,fill) => {
+      const poly=trendPts.map(p=>[p[0],convert(p[lo])]).concat([...trendPts].reverse().map(p=>[p[0],convert(p[hi])]));
+      return {name,type:'custom',silent:true,z:1,itemStyle:{color:fill},data:poly.length ? [0] : [],renderItem:(params,api)=>({type:'polygon',shape:{points:poly.map(p=>api.coord(p))},style:{fill},clipPath:{type:'rect',shape:{x:params.coordSys.x,y:params.coordSys.y,width:params.coordSys.width,height:params.coordSys.height}}})};
+    };
+    // Prioritise window markers, then deduplicate dates. Daily labels need
+    // at least 45px; desktop labels appear no more often than every two days.
+    const seen=new Set(), labelTimes=[];
+    const ordered=[...(data.markers || [])].sort((a,b)=>Number(Boolean(b.edge))-Number(Boolean(a.edge)));
+    const markerData=ordered.map(m=>{
+      const t=ts(m.time), key=date(t), special=Boolean(m.edge)||/range|last/i.test(m.label);
+      const spaced=labelTimes.every(x=>Math.abs(x-t)/(bounds.end-bounds.start)*(innerWidth-140)> (mobile ? 64 : 55));
+      const eligible=special || (!mobile && new Date(t).getUTCDate()%2===0 && !/minimum/i.test(m.label));
+      const show=eligible && !seen.has(key) && spaced;
+      if(show){seen.add(key);labelTimes.push(t);}
+      return {value:[t,convert(m.price),Number(m.price)],eventLabel:m.label,label:{show,formatter:m.edge==='buffer upper edge' ? `Safe · buffer\n${date(t)}` : m.edge ? `Conservative\n${date(t)}` : /range|last/i.test(m.label) ? `Range\n${date(t)}` : date(t),position:m.edge==='conservative upper edge' ? 'bottom' : 'top',color:c.muted,fontSize:9,distance:12}};
+    });
+    const series = [ribbon('Conservative band',1,2,theme==='dark' ? '#68a9fb50' : '#357fd74d'),
+      ribbon('Uncertainty buffer',2,3,theme==='dark' ? '#a7d9ff38' : '#75bce645'),
+      {name:'Central trend',type:'line',data:trendPts.map(p=>[p[0],convert(p[4])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,type:'dotted',opacity:.65},z:2},
       {name:'Trend lower',type:'line',data:trendPts.map(p=>[p[0],convert(p[1])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,opacity:.45},z:1},
       {name:'Trend upper',type:'line',data:trendPts.map(p=>[p[0],convert(p[2])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,opacity:.45},z:1},
       {name:'Registration cost',type:'line',data:points,symbol:'none',lineStyle:{color:c.accent,width:2.3},itemStyle:{color:c.accent},z:3,
         markArea:band && Number.isFinite(Number(band.min)) ? {silent:true,itemStyle:{color:theme === 'dark' ? '#a5afbc15' : '#64748b13'},label:{show:!mobile,position:'insideTopLeft',color:c.dim,fontSize:10,formatter:`Last ${band.n || 8} registration range`},data:[[{yAxis:convert(band.min)},{yAxis:convert(band.max)}]]} : undefined},
       {name:'Registrations',type:'scatter',data:data.registrations.map(r=>({value:[ts(r.time),convert(r.price),Number(r.price)],eventLabel:`Registration · ${r.inferred ? 'estimated' : 'observed'} price paid`,source:r.source})),symbolSize:mobile ? 7 : 8,itemStyle:{color:c.red,borderColor:c.panel,borderWidth:1.5},z:5},
       {name:'Decay projection',type:'line',data:projection,symbol:'none',lineStyle:{color:c.muted,width:1.7,type:'dashed'},itemStyle:{color:c.muted},z:3},
-      {name:'Dated projection markers',type:'scatter',labelLayout:{hideOverlap:true},data:(data.markers || []).map(m=>({value:[ts(m.time),convert(m.price),Number(m.price)],eventLabel:m.label,label:{show:!mobile || /trend|range|last/i.test(m.label),formatter:/trend/i.test(m.label) ? `Safe estimate\n${date(m.time)}` : /range|last/i.test(m.label) ? `Range entry\n${date(m.time)}` : date(m.time),position:'top',color:c.muted,fontSize:9,distance:10}})),symbolSize:5,itemStyle:{color:c.muted},z:4},
-      {name:'Now',type:'scatter',labelLayout:{hideOverlap:true},data:[{value:[ts(data.current.time),convert(data.current.price),Number(data.current.price)],eventLabel:'Current chain cost',source:data.current.source}],symbolSize:9,itemStyle:{color:c.accent,borderColor:c.panel,borderWidth:2},label:{show:true,formatter:mobile ? `Now ≈ ${price(data.current.price)}` : `Now ≈ ${num(data.current.price,2)} TAO${usdAvailable() ? ` (≈ $${num(data.current.price * rate(),0)})` : ' (USD unavailable)'}`,position:'top',distance:13,color:c.accent,fontSize:mobile ? 10 : 11,fontWeight:600},z:6}
+      {name:'Dated projection markers',type:'scatter',labelLayout:{hideOverlap:true},data:markerData,symbolSize:5,itemStyle:{color:c.muted},z:4},
+      {name:'Now',type:'scatter',labelLayout:{hideOverlap:true},data:[{value:[ts(data.current.time),convert(data.current.price),Number(data.current.price)],eventLabel:'Current chain cost',source:data.current.source}],symbolSize:9,itemStyle:{color:c.accent,borderColor:c.panel,borderWidth:2},label:{show:false},z:6}
     ];
-    chart.setOption({animation:false,backgroundColor:'transparent',textStyle:{fontFamily:'Inter, system-ui, sans-serif',color:c.muted},grid:{left:mobile ? 58 : 77,right:mobile ? 24 : 40,top:66,bottom:87},legend:{data:['Registration cost','Registrations','Trend band','Decay projection'],top:16,left:mobile ? 16 : 27,textStyle:{color:c.muted,fontSize:mobile ? 9 : 10},itemWidth:mobile ? 13 : 18,itemHeight:7,itemGap:mobile ? 12 : 22,selectedMode:true},tooltip:{trigger:'axis',confine:true,backgroundColor:c.panel,borderColor:c.border,textStyle:{color:c.text,fontSize:12},extraCssText:'max-width:330px;box-shadow:0 8px 32px #0003;border-radius:9px;padding:14px;',axisPointer:{type:'line',lineStyle:{color:c.dim,type:'dashed'}},formatter:tooltip},xAxis:{type:'time',min:minTime,max:bounds.end,axisLine:{lineStyle:{color:c.border}},axisTick:{show:false},axisLabel:{color:c.dim,fontSize:10,hideOverlap:true,formatter:v=>date(v)},splitLine:{show:false}},yAxis:{type:'value',min:0,name:unit === 'tao' ? 'TAO' : 'USD · latest rate',nameTextStyle:{color:c.dim,fontSize:9,align:'left'},nameGap:20,axisLabel:{color:c.dim,fontSize:10,formatter:v=>unit === 'usd' ? (v>=1000000 ? `$${num(v/1000000,1)}m` : `$${num(v/1000,0)}k`) : num(v)},axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:c.grid,type:'dashed',opacity:.65}}},dataZoom:[{type:'inside',startValue:bounds.start,endValue:bounds.end,filterMode:'none',zoomOnMouseWheel:true,moveOnMouseWheel:false,preventDefaultMouseMove:true},{type:'slider',startValue:bounds.start,endValue:bounds.end,filterMode:'none',bottom:18,height:23,left:mobile ? 58 : 77,right:mobile ? 24 : 40,borderColor:c.border,backgroundColor:'transparent',fillerColor:theme === 'dark' ? '#87beff0c' : '#226bc00c',dataBackground:{lineStyle:{color:c.dim,opacity:.5},areaStyle:{color:c.dim,opacity:.08}},selectedDataBackground:{lineStyle:{color:c.accent,opacity:.7},areaStyle:{color:c.accent,opacity:.12}},handleStyle:{color:c.panel,borderColor:c.dim},textStyle:{color:c.muted,fontSize:9},labelFormatter:v=>date(v)}],series}, {notMerge:true});
+    chart.setOption({animation:false,backgroundColor:'transparent',textStyle:{fontFamily:'Inter, system-ui, sans-serif',color:c.muted},grid:{left:mobile ? 58 : 77,right:mobile ? 24 : 40,top:mobile ? 88 : 66,bottom:87},legend:{data:['Registration cost','Registrations','Conservative band','Uncertainty buffer','Decay projection'],top:16,left:mobile ? 16 : 27,textStyle:{color:c.muted,fontSize:mobile ? 9 : 10},itemWidth:mobile ? 13 : 18,itemHeight:7,itemGap:mobile ? 12 : 22,selectedMode:true},tooltip:{trigger:'axis',confine:true,position:(point,params,dom,rect,size)=>[Math.max(0,Math.min(point[0]-size.contentSize[0]/2,size.viewSize[0]-size.contentSize[0])),size.viewSize[1]-size.contentSize[1]-5],backgroundColor:c.panel,borderColor:c.border,textStyle:{color:c.text,fontSize:12},extraCssText:'max-width:360px;white-space:normal;box-shadow:0 8px 32px #0003;border-radius:9px;padding:14px;',axisPointer:{type:'line',lineStyle:{color:c.dim,type:'dashed'}},formatter:tooltip},xAxis:{type:'time',min:minTime,max:bounds.end,axisLine:{lineStyle:{color:c.border}},axisTick:{show:false},axisLabel:{color:c.dim,fontSize:10,hideOverlap:true,formatter:v=>date(v)},splitLine:{show:false}},yAxis:{type:'value',min:0,name:unit === 'tao' ? 'TAO' : 'USD · latest rate',nameTextStyle:{color:c.dim,fontSize:9,align:'left'},nameGap:20,axisLabel:{color:c.dim,fontSize:10,formatter:v=>unit === 'usd' ? (v>=1000000 ? `$${num(v/1000000,1)}m` : `$${num(v/1000,0)}k`) : num(v)},axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:c.grid,type:'dashed',opacity:.65}}},dataZoom:[{type:'inside',startValue:bounds.start,endValue:bounds.end,filterMode:'none',zoomOnMouseWheel:true,moveOnMouseWheel:false,preventDefaultMouseMove:true},{type:'slider',startValue:bounds.start,endValue:bounds.end,filterMode:'none',bottom:18,height:23,left:mobile ? 58 : 77,right:mobile ? 24 : 40,borderColor:c.border,backgroundColor:'transparent',fillerColor:theme === 'dark' ? '#87beff0c' : '#226bc00c',dataBackground:{lineStyle:{color:c.dim,opacity:.5},areaStyle:{color:c.dim,opacity:.08}},selectedDataBackground:{lineStyle:{color:c.accent,opacity:.7},areaStyle:{color:c.accent,opacity:.12}},handleStyle:{color:c.panel,borderColor:c.dim},textStyle:{color:c.muted,fontSize:9},labelFormatter:v=>date(v)}],series}, {notMerge:true});
     if (oldZoom?.[0] && Number.isFinite(oldZoom[0].start)) chart.dispatchAction({type:'dataZoom',start:oldZoom[0].start,end:oldZoom[0].end});
     scaleVisibleYAxis();
     $('chart-empty').hidden = true;

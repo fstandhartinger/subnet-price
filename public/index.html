@@ -9,7 +9,7 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%230d151f'/%3E%3Cpath d='M8 27L15 12L22 25L31 9' stroke='%237cbdff' fill='none' stroke-width='3'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
   <script defer src="/echarts.min.js"></script>
-  <script defer src="/app.js?v=conservative-20261008"></script>
+  <script defer src="/app.js?v=buffer-20261008-r1"></script>
 </head>
 <body>
   <div class="shell">
@@ -36,7 +36,7 @@
             <div class="segmented" role="group" aria-label="Price unit"><button data-unit="tao" class="active" aria-pressed="true">TAO</button><button data-unit="usd">USD</button></div>
           </div>
         </div>
-        <div class="chart-wrap"><div id="chart" aria-label="Registration cost chart. Use the time range buttons or the slider to zoom." role="img"></div><div class="chart-empty" id="chart-empty">Loading network history<span>Current cost is read directly from the Finney chain.</span></div></div>
+        <div class="chart-now" id="chart-now" aria-live="polite"></div><div class="budget-detail" id="budget-detail"></div><div class="chart-wrap"><div id="chart" aria-label="Registration cost chart. Use the time range buttons or the slider to zoom." role="img"></div><div class="chart-empty" id="chart-empty">Loading network history<span>Current cost is read directly from the Finney chain.</span></div></div>
         <div id="reference-windows" class="reference-windows" aria-live="polite"></div>
         <div class="chart-footer"><span><span class="small-icon" aria-hidden="true">↔</span> Drag the slider to zoom · scroll or pinch inside the chart</span><button id="reset-zoom" class="text-button">Reset view</button></div>
       </section>
@@ -44,8 +44,8 @@
         <div class="section-heading"><div class="eyebrow">HOW TO READ THIS</div><h2>A view of the mechanism.</h2></div>
         <div class="explanation-grid">
           <article><span class="explain-line solid"></span><h3>Cost & registrations</h3><p>The line tracks the network registration cost. Red points mark observed registrations and their estimated prices paid. After a registration the cost jumps; between registrations it decays.</p></article>
-          <article><span class="explain-line band"></span><h3>Two reference bands</h3><p>The grey band spans the lowest to highest price of the last eight detected, priced registrations. The blue band follows the last eight registration prices, using the upper half of their variation plus an extra price buffer. Recent prices set a minimum level, with the last four registrations giving a faster response to rising prices. It is deliberately conservative: biased towards higher prices and earlier registrations, rather than a probability range. Neither band predicts when someone will register.</p></article>
-          <article><span class="explain-line dashed"></span><h3>A conditional path</h3><p>The dashed line extends the current decay, assuming no new registration and no change to the mechanism. The safe estimate marks the first touch of the blue band’s upper edge, assuming competitors register earlier; if that threshold is already reached, it says so. Dated markers also show the grey range crossing. A registration resets that path. <span id="floor-explanation">The chain has a minimum cost floor; an endpoint shown before that floor is available is illustrative.</span> The projection is limited to 60 days. This is a mechanism illustration, not advice.</p></article>
+          <article><span class="explain-line band"></span><h3>Conservative band & uncertainty buffer</h3><p>The grey range spans the last eight registration prices. The blue conservative band follows their robust trend, anchored to recent prices and deliberately biased towards higher prices and earlier registrations. Its width uses the residual spread, with a minimum of 30% of the trend value (the equivalent of ±15%, shifted upward). The lighter outer band adds uncertainty using residual standard deviation or the 95th-percentile excess, with a minimum extra 15% margin. These are planning buffers, not statistical confidence intervals. To be safe, budget for the upper edge of the buffer.</p></article>
+          <article><span class="explain-line dashed"></span><h3>A conditional path</h3><p>The dashed line extends the current decay, assuming no new registration and no change to the mechanism. The safe estimate marks the first touch of the lighter buffer’s upper edge, assuming competitors register earlier; if that threshold is already reached, it says so. Dated markers also show the grey range crossing. A registration resets that path. <span id="floor-explanation">The chain has a minimum cost floor; an endpoint shown before that floor is available is illustrative.</span> The projection is limited to 60 days. This is a mechanism illustration, not advice.</p></article>
         </div>
       </section>
       <footer class="page-footer"><div><span class="footer-title">Data, kept in context.</span><p id="source-details">Current cost: Finney chain · History & TAO/USD: Taostats</p><p id="freshness-details">Checking source timestamps…</p></div><div class="footer-note">USD values use the latest available TAO/USD rate,<br>including for historical and projected values.<span id="usd-rate"></span></div></footer>
