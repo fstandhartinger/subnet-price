@@ -57,6 +57,12 @@ class MathTests(unittest.TestCase):
         self.assertEqual(markers[-1]['label'],'Chain minimum reached')
         self.assertTrue(all(p[1]>=1 for p in points))
 
+    def test_floor_and_already_inside_markers(self):
+        self.assertEqual(b.project(dict(time=0,price=1),10,None,None,floor=1),([],[]))
+        _,markers=b.project(dict(time=0,price=50),10,dict(min=40,max=60),dict(origin=0,slope=0,intercept=50,low=-10,high=10),floor=1)
+        self.assertTrue(any(m['label']=='Already in trend band' for m in markers))
+        self.assertFalse(any(m['label'].startswith('Enters') for m in markers))
+
     def test_no_crossing_for_diverging_band_and_bounded_projection(self):
         current=dict(time=0,price=10000)
         projection,markers=b.project(current,1,None,dict(origin=0,slope=-2,intercept=50,low=-10,high=10))
@@ -95,6 +101,35 @@ class StoreTests(unittest.TestCase):
         self.assertLessEqual(self.store.due['history'],b.time.time())
         self.assertEqual(self.store.data()['projection'],[])
 
+    def test_floor_rate_limit_keeps_fresh_current_and_backoff(self):
+        with patch.object(b,'fetch_chain',return_value=400), patch.object(b,'fetch_chain_floor',side_effect=b.RateLimited(800)):
+            self.store.refresh('chain')
+        self.assertEqual(self.store.state['current']['price'],400)
+        self.assertIsNone(self.store.state['floor'])
+        self.assertGreater(self.store.due['chain'],b.time.time()+795)
+        self.assertEqual(self.store.data()['projection'],[])
+
+    def test_history_fetch_does_not_block_chain_and_cache_keeps_both(self):
+        entered=threading.Event(); release=threading.Event()
+        def history(*args):
+            entered.set(); release.wait(2); return [row(1,500)]
+        with patch.dict(b.os.environ,{'TAOSTATS_API':'test-only'}), patch.object(b,'fetch_history',side_effect=history), patch.object(b,'fetch_chain',return_value=450):
+            worker=threading.Thread(target=self.store.refresh,args=('history',)); worker.start()
+            self.assertTrue(entered.wait(1))
+            self.store.refresh('chain')
+            self.assertEqual(self.store.state['current']['price'],450)
+            release.set(); worker.join(2); self.assertFalse(worker.is_alive())
+        cached=b.Store(self.tmp.name).state
+        self.assertEqual(cached['current']['price'],450)
+        self.assertEqual(cached['rows'],[row(1,500)])
+
+    def test_response_cache_avoids_repeated_fit(self):
+        with patch.object(self.store,'data',wraps=self.store.data) as compute:
+            first=self.store.response(); second=self.store.response()
+            self.assertEqual(first,second); self.assertEqual(compute.call_count,1)
+            self.store._body_at=0
+            self.store.response(); self.assertEqual(compute.call_count,2)
+
     def test_stale_current_has_no_projection(self):
         now=int(b.time.time()*1000)
         self.store.state.update(rows=[row(now/b.DAY-2,600),row(now/b.DAY-1,500)],history_at=now,current=dict(time=now-1000000,price=450,source='chain'))
@@ -122,6 +157,7 @@ class HttpTests(unittest.TestCase):
                 with self.assertRaises(urllib.error.HTTPError): urllib.request.urlopen(url+'/link')
                 with self.assertRaises(urllib.error.HTTPError): urllib.request.urlopen(url+'/../private')
                 store.state['current']=None
+                store._body_at=0
                 with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(url+'/healthz')
                 self.assertEqual(caught.exception.code,503)
             finally: server.shutdown(); server.server_close(); worker.join()

@@ -93,7 +93,7 @@ def trend_fit(events):
 
 
 def project(current, rate, bands, trend, floor=0):
-    if not current or rate <= 0:
+    if not current or rate <= 0 or current['price'] <= floor:
         return [], []
     now, price = current['time'], current['price']
     end = now + min(max(0,price-floor)/rate, 60)*DAY
@@ -114,6 +114,8 @@ def project(current, rate, bands, trend, floor=0):
             else: lo=max(lo,-a/b)
         if lo <= hi and hi >= 0 and lo <= (end-now)/DAY:
             t=int(now+max(0,lo)*DAY)
+            if lower <= price <= upper:
+                label=label.replace('Enters ', 'Already in ')
             markers.append(dict(time=t,price=cost(t),label=label))
     if bands: entry(bands['min'],bands['max'],0,'Enters last 8 registration range')
     if trend:
@@ -192,6 +194,11 @@ def fetch_chain_floor():
 class Store:
     def __init__(self, cache_dir=None):
         self.lock=threading.Lock()
+        self.cache_lock=threading.Lock()
+        self.body_lock=threading.Lock()
+        self._body_at=0
+        self._body=None
+        self._body_data=None
         self.cache=Path(cache_dir or os.getenv('CACHE_DIR','/tmp/subnet-price'))/'cache.json'
         self.state=dict(rows=[],current=None,history_at=None,usd=None,usd_at=None,floor=None,floor_at=None)
         self.errors={}
@@ -207,10 +214,12 @@ class Store:
 
     def refresh(self, kind):
         now=int(time.time()*1000)
+        floor_delay=0
         try:
             if kind=='chain':
                 update={'current':dict(time=now,price=fetch_chain(),source='Finney chain runtime API')}
                 try: update.update(floor=fetch_chain_floor(),floor_at=now)
+                except RateLimited as e: floor_delay=e.delay
                 except ValueError: pass
             else:
                 key=os.getenv('TAOSTATS_API') or os.getenv('TAOSTATS_API_KEY')
@@ -236,22 +245,34 @@ class Store:
                 self.state.update(update)
                 self.errors.pop(kind,None)
                 self.failures[kind]=0
-                self.due[kind]=time.time()+(CHAIN_INTERVAL if kind=='chain' else HISTORY_INTERVAL if kind=='history' else 900)
-                snapshot=dict(self.state)
-            self.cache.parent.mkdir(parents=True,exist_ok=True)
-            tmp=self.cache.with_suffix('.tmp')
-            tmp.write_text(json.dumps(snapshot,allow_nan=False)); tmp.replace(self.cache)
+                self.due[kind]=time.time()+max(floor_delay,CHAIN_INTERVAL if kind=='chain' else HISTORY_INTERVAL if kind=='history' else 900)
+                # Each upstream loop is independent. Serialize cache writes and take a
+            # fresh snapshot only after obtaining the writer lock to avoid rollback.
+            with self.cache_lock:
+                with self.lock: snapshot=dict(self.state)
+                self.cache.parent.mkdir(parents=True,exist_ok=True)
+                tmp=self.cache.with_suffix('.tmp')
+                tmp.write_text(json.dumps(snapshot,allow_nan=False)); tmp.replace(self.cache)
         except Exception as e:
             with self.lock:
                 self.failures[kind]+=1
                 self.due[kind]=time.time()+(e.delay if isinstance(e,RateLimited) else min(3600,60*2**min(self.failures[kind],6)))
                 self.errors[kind]=f'{kind.capitalize()} refresh unavailable; retaining last good data.'
 
-    def loop(self):
+    def loop(self,kind):
         while True:
-            for kind in self.due:
-                if time.time()>=self.due[kind]: self.refresh(kind)
+            with self.lock: due=self.due[kind]
+            if time.time()>=due: self.refresh(kind)
             time.sleep(5)
+
+    def response(self):
+        # Serialize computation so bursts of public requests share a 2s snapshot.
+        with self.body_lock:
+            if self._body is None or time.monotonic()-self._body_at>=2:
+                self._body_data=self.data()
+                self._body=json.dumps(self._body_data,allow_nan=False,separators=(',',':')).encode()
+                self._body_at=time.monotonic()
+            return self._body_data,self._body
 
     def data(self):
         with self.lock:
@@ -306,10 +327,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         path=urllib.parse.urlsplit(self.path).path
         if path in ('/api/data','/healthz'):
-            data=self.server.store.data()
+            data,data_body=self.server.store.response()
             ready=bool(data['pts'] and data['current'] and data['built']-data['current_at']<3600000)
             payload=data if path=='/api/data' else dict(status='ok' if ready else 'degraded',ready=ready)
-            body=json.dumps(payload,allow_nan=False,separators=(',',':')).encode()
+            body=data_body if path=='/api/data' else json.dumps(payload,allow_nan=False,separators=(',',':')).encode()
             self.send_response(200 if path=='/api/data' or ready else 503)
             self.send_header('Content-Type','application/json; charset=utf-8')
             self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -326,7 +347,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def main():
     store=Store()
-    threading.Thread(target=store.loop,daemon=True).start()
+    for kind in store.due:
+        threading.Thread(target=store.loop,args=(kind,),daemon=True).start()
     public=Path(__file__).parent/'public'
     server=Server(('0.0.0.0',int(os.getenv('PORT','8000'))),functools.partial(Handler,directory=str(public)))
     server.store=store
