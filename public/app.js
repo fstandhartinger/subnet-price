@@ -78,11 +78,24 @@
     $('floor-explanation').textContent = data.floor != null && Number.isFinite(Number(data.floor)) ? `The dashed path stops at the chain minimum of ${num(data.floor, 2)} TAO (read ${age(data.floor_at)}).` : 'The chain minimum is currently unavailable; any shown endpoint is illustrative.';
     $('source-details').textContent = `Current cost: Finney chain · History & TAO/USD: Taostats · ${data.registrations.length} observed registrations`;
   }
+  function defaultEnd(end) {
+    // Show the forecast until the dashed decay line has passed through the whole fan (below its lower buffer edge), plus a small margin.
+    const now = Date.now();
+    if (!data.trend || !data.projection.length) return Math.min(end, Math.max(now, ...data.projection.map(p => ts(p[0]))));
+    let exit = null;
+    for (const p of data.projection) {
+      const t = ts(p[0]); if (t < now) continue;
+      const b = trendBounds(t);
+      if (Number(p[1]) < (b.bufferLower ?? b.lower)) { exit = t; break; }
+    }
+    const last = ts(data.projection[data.projection.length - 1][0]);
+    return Math.min(end, Math.max(now + DAY, (exit ?? last) + DAY / 2));
+  }
   function viewBounds() {
     const currentTime = ts(data.current.time);
     const first = data.pts.length ? ts(data.pts[0][0]) : currentTime - DAY;
     const end = Math.max(currentTime + DAY, ...data.projection.map(p => ts(p[0])));
-    return {start:range === 'default' ? defaultStart : range === 'all' ? first : Math.max(first, currentTime - Number(range) * DAY), end, visibleEnd:range === 'default' ? Date.now() : end};
+    return {start:range === 'default' ? defaultStart : range === 'all' ? first : Math.max(first, currentTime - Number(range) * DAY), end, visibleEnd:range === 'default' ? defaultEnd(end) : end};
   }
   function tooltip(params) {
     const entries = Array.isArray(params) ? params : [params];
