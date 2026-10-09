@@ -103,7 +103,7 @@
     let x = (useful[0] || entries[0])?.value?.[0];
     if (x == null) return '';
     const pixelX=t=>chart.convertToPixel({xAxisIndex:0},Number(t));
-    if(calloutTarget!=null && Math.abs(pixelX(x)-pixelX(calloutTarget))<=5) {
+    if(calloutTarget!=null && Math.abs(Number(x)-calloutTarget)<=2*3600000 && Math.abs(pixelX(x)-pixelX(calloutTarget))<=5) {
       x=calloutTarget;
       useful=[{seriesName:'const target 850',value:[x,convert(850),850],color:'#f5a524',data:{eventLabel:'850 TAO · const can register'}}];
     } else if(!useful.length) {
@@ -113,6 +113,12 @@
         x=ts(nearest[0]);useful=[{seriesName:future ? 'Decay projection' : 'Registration cost',value:[x,convert(nearest[1]),Number(nearest[1])],color:future ? colors().muted : colors().accent}];
       }
     }
+    const seenQuotes=new Set();
+    useful=useful.sort((a,b)=>Number(b.seriesName==='Now')-Number(a.seriesName==='Now')).filter(p=>{
+      const key=Number(p.value?.[2] ?? p.value?.[1]);
+      if(seenQuotes.has(key)) return false;
+      seenQuotes.add(key);return true;
+    }).slice(0,2);
     let html = `<div class="tooltip-title">${escape(date(x, true))} UTC</div>`;
     for (const p of useful) {
       const tao = Number(p.value?.[2] ?? p.value?.[1] / (unit === 'usd' ? rate() : 1));
