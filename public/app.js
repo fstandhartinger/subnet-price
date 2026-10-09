@@ -3,6 +3,7 @@
   const DAY = 86400000;
   const loadedAt = Date.now();
   const defaultStart = Date.UTC(2026, 7, 10);
+  let userZoomed = false, restoringZoom = false;
   const $ = id => document.getElementById(id);
   let data = null, unit = 'tao', range = 'default', chart = null, loading = false, fetchError = '';
   const savedTheme = localStorage.getItem('subnet-theme');
@@ -81,7 +82,7 @@
     const currentTime = ts(data.current.time);
     const first = data.pts.length ? ts(data.pts[0][0]) : currentTime - DAY;
     const end = Math.max(currentTime + DAY, ...data.projection.map(p => ts(p[0])));
-    return {start:range === 'default' ? defaultStart : range === 'all' ? first : Math.max(first, currentTime - Number(range) * DAY), end, visibleEnd:range === 'default' ? loadedAt : end};
+    return {start:range === 'default' ? defaultStart : range === 'all' ? first : Math.max(first, currentTime - Number(range) * DAY), end, visibleEnd:range === 'default' ? Date.now() : end};
   }
   function tooltip(params) {
     const entries = Array.isArray(params) ? params : [params];
@@ -122,7 +123,7 @@
   function renderChart(preserveZoom = false) {
     if (!chart || !data) return;
     const c = colors(), mobile = innerWidth < 620, bounds = viewBounds();
-    const oldZoom = preserveZoom ? chart.getOption()?.dataZoom : null;
+    const oldZoom = preserveZoom && userZoomed ? chart.getOption()?.dataZoom : null;
     const points = data.pts.map(p => [ts(p[0]), convert(p[1]), Number(p[1])]);
     const projection = data.projection.map(p => [ts(p[0]), convert(p[1]), Number(p[1])]);
     const trend = data.trend;
@@ -165,7 +166,7 @@
       {name:'Now',type:'scatter',labelLayout:{hideOverlap:true},data:[{value:[ts(data.current.time),convert(data.current.price),Number(data.current.price)],eventLabel:'Current chain cost',source:data.current.source}],symbolSize:9,itemStyle:{color:c.accent,borderColor:c.panel,borderWidth:2},label:{show:false},z:6}
     ];
     chart.setOption({animation:false,backgroundColor:'transparent',textStyle:{fontFamily:'Inter, system-ui, sans-serif',color:c.muted},grid:{left:mobile ? 58 : 77,right:mobile ? 24 : 40,top:mobile ? 88 : 66,bottom:87},legend:{data:['Registration cost','Registrations','Conservative band','Uncertainty buffer','Decay projection'],top:16,left:mobile ? 16 : 27,textStyle:{color:c.muted,fontSize:mobile ? 9 : 10},itemWidth:mobile ? 13 : 18,itemHeight:7,itemGap:mobile ? 12 : 22,selectedMode:true},tooltip:{trigger:'axis',confine:true,position:(point,params,dom,rect,size)=>[Math.max(0,Math.min(point[0]-size.contentSize[0]/2,size.viewSize[0]-size.contentSize[0])),size.viewSize[1]-size.contentSize[1]-5],backgroundColor:c.panel,borderColor:c.border,textStyle:{color:c.text,fontSize:12},extraCssText:'max-width:360px;white-space:normal;box-shadow:0 8px 32px #0003;border-radius:9px;padding:14px;',axisPointer:{type:'line',lineStyle:{color:c.dim,type:'dashed'}},formatter:tooltip},xAxis:{type:'time',min:minTime,max:bounds.end,axisLine:{lineStyle:{color:c.border}},axisTick:{show:false},axisLabel:{color:c.dim,fontSize:10,hideOverlap:true,formatter:v=>date(v)},splitLine:{show:false}},yAxis:{type:'value',min:0,name:unit === 'tao' ? 'TAO' : 'USD · latest rate',nameTextStyle:{color:c.dim,fontSize:9,align:'left'},nameGap:20,axisLabel:{color:c.dim,fontSize:10,formatter:v=>unit === 'usd' ? (v>=1000000 ? `$${num(v/1000000,1)}m` : `$${num(v/1000,0)}k`) : num(v)},axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:c.grid,type:'dashed',opacity:.65}}},dataZoom:[{type:'inside',startValue:bounds.start,endValue:bounds.visibleEnd,filterMode:'none',zoomOnMouseWheel:true,moveOnMouseWheel:false,preventDefaultMouseMove:true},{type:'slider',startValue:bounds.start,endValue:bounds.visibleEnd,filterMode:'none',bottom:18,height:23,left:mobile ? 58 : 77,right:mobile ? 24 : 40,borderColor:c.border,backgroundColor:'transparent',fillerColor:theme === 'dark' ? '#87beff0c' : '#226bc00c',dataBackground:{lineStyle:{color:c.dim,opacity:.5},areaStyle:{color:c.dim,opacity:.08}},selectedDataBackground:{lineStyle:{color:c.accent,opacity:.7},areaStyle:{color:c.accent,opacity:.12}},handleStyle:{color:c.panel,borderColor:c.dim},textStyle:{color:c.muted,fontSize:9},labelFormatter:v=>date(v)}],series}, {notMerge:true});
-    if (oldZoom?.[0] && Number.isFinite(oldZoom[0].start)) chart.dispatchAction({type:'dataZoom',start:oldZoom[0].start,end:oldZoom[0].end});
+    if (oldZoom?.[0] && Number.isFinite(Number(oldZoom[0].startValue))) {restoringZoom = true; chart.dispatchAction({type:'dataZoom',startValue:Number(oldZoom[0].startValue),endValue:Number(oldZoom[0].endValue)}); restoringZoom = false;}
     scaleVisibleYAxis();
     $('chart-empty').hidden = true;
   }
@@ -195,7 +196,7 @@
     } finally {loading = false;}
   }
   document.querySelectorAll('[data-range]').forEach(button=>button.addEventListener('click',()=>{
-    range = button.dataset.range;
+    range = button.dataset.range; userZoomed = false;
     document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',String(b===button));});
     renderChart();
   }));
@@ -205,13 +206,13 @@
     updateMeta(); renderChart(true);
   }));
   $('theme-toggle').addEventListener('click',()=>{theme=theme==='dark'?'light':'dark';applyTheme();});
-  $('reset-zoom').addEventListener('click',()=>renderChart());
+  $('reset-zoom').addEventListener('click',()=>{userZoomed = false; renderChart();});
   applyTheme();
   if (typeof echarts === 'undefined') {
     $('notice').hidden=false;$('notice').textContent='The chart could not load. Refresh this page to try again.';return;
   }
   chart = echarts.init($('chart'), null, {renderer:'canvas'}); window.chart = chart;
-  chart.on('datazoom', scaleVisibleYAxis);
+  chart.on('datazoom', () => {if (!restoringZoom) userZoomed = true; scaleVisibleYAxis();});
   let resizeTimer;
   window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{chart.resize();if(data)renderChart(true);},150);});
   refresh(); setInterval(refresh, 60000); setInterval(updateMeta, 30000);
