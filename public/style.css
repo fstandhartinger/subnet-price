@@ -14,3 +14,8 @@ html[data-theme=light]{color-scheme:light;--bg:#f4f7fb;--panel:#fff;--panel-alt:
 
 main > .chart-panel:first-child{margin-top:20px}
 @media(max-width:620px){.segmented button[data-range]{padding-left:8px;padding-right:8px}.chart-controls{gap:6px}}
+
+/* A dedicated hover dock keeps all plotted data and annotations unobstructed. */
+.chart-tooltip-space{height:180px;padding:20px 26px;border-top:1px solid var(--border);color:var(--dim);font-size:11px;background:var(--panel)}
+.tooltip-title{margin-bottom:6px;font-size:11px}.tooltip-row{margin:4px 0;line-height:16px}.tooltip-note{max-width:none;margin-top:6px;font-size:10px}
+@media(max-width:620px){#chart{height:520px}.chart-tooltip-space{height:215px;padding:20px 16px}.tooltip-row{font-size:10px;gap:8px}.tooltip-row strong{white-space:nowrap}}
