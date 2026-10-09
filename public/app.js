@@ -167,6 +167,18 @@
       if(show){seen.add(key);labelTimes.push(t);}
       return {value:[t,convert(m.price),Number(m.price)],eventLabel:m.label,label:{show,formatter:m.edge==='buffer upper edge' ? `Safe · buffer\n${date(t)}` : m.edge ? `Main fan\n${date(t)}` : /range|last/i.test(m.label) ? `Range\n${date(t)}` : date(t),position:m.edge==='conservative upper edge' ? 'bottom' : 'top',color:c.muted,fontSize:9,distance:12}};
     });
+    // 9 Oct 2026 (Florian): const wrote "We can register at 850" -> mark where the decay projection reaches 850 TAO.
+    const CONST_TARGET = 850;
+    let constTarget = null;
+    if (Number(data.current.price) <= CONST_TARGET) constTarget = ts(data.current.time);
+    else for (let i = 1; i < data.projection.length; i++) {
+      const [t0, p0] = [ts(data.projection[i-1][0]), Number(data.projection[i-1][1])], [t1, p1] = [ts(data.projection[i][0]), Number(data.projection[i][1])];
+      if (p0 > CONST_TARGET && p1 <= CONST_TARGET) { constTarget = t0 + (t1 - t0) * (p0 - CONST_TARGET) / (p0 - p1); break; }
+    }
+    const constSeries = constTarget == null ? [] : [{name:'const target 850',type:'scatter',z:7,symbolSize:mobile ? 11 : 13,
+      itemStyle:{color:'#f5a524',borderColor:c.panel,borderWidth:2},
+      label:{show:true,position:'left',distance:8,color:'#f5a524',fontWeight:600,fontSize:mobile ? 10 : 11,formatter:`850 TAO · const can register\n${date(constTarget, true)} UTC`},
+      data:[{value:[constTarget,convert(CONST_TARGET),CONST_TARGET],eventLabel:'850 TAO: const can register',source:'const: "We can register at 850" (9 Oct 2026). Time = when the decay projection reaches 850 TAO, if no other subnet registers first.'}]}];
     const series = [ribbon('Conservative band',1,2,theme==='dark' ? '#68a9fb50' : '#357fd74d'),
       ribbon('Uncertainty buffer',5,3,theme==='dark' ? '#a7d9ff38' : '#75bce645'),
       {name:'Central trend',type:'line',data:trendPts.map(p=>[p[0],convert(p[4])]),symbol:'none',silent:true,lineStyle:{color:c.blue,width:1,type:'dotted',opacity:.65},z:2},
@@ -176,6 +188,7 @@
       {name:'Registrations',type:'scatter',data:data.registrations.map(r=>({value:[ts(r.time),convert(r.price),Number(r.price)],eventLabel:`Registration · ${r.inferred ? 'estimated' : 'observed'} price paid`,source:r.source})),symbolSize:mobile ? 7 : 8,itemStyle:{color:c.red,borderColor:c.panel,borderWidth:1.5},z:5},
       {name:'Decay projection',type:'line',data:projection,symbol:'none',lineStyle:{color:c.muted,width:1.7,type:'dashed'},itemStyle:{color:c.muted},z:3},
       {name:'Dated projection markers',type:'scatter',labelLayout:{hideOverlap:true},data:markerData,symbolSize:5,itemStyle:{color:c.muted},z:4},
+      ...constSeries,
       {name:'Now',type:'scatter',labelLayout:{hideOverlap:true},data:[{value:[ts(data.current.time),convert(data.current.price),Number(data.current.price)],eventLabel:'Current chain cost',source:data.current.source}],symbolSize:9,itemStyle:{color:c.accent,borderColor:c.panel,borderWidth:2},label:{show:false},z:6}
     ];
     chart.setOption({animation:false,backgroundColor:'transparent',textStyle:{fontFamily:'Inter, system-ui, sans-serif',color:c.muted},grid:{left:mobile ? 58 : 77,right:mobile ? 24 : 40,top:mobile ? 88 : 66,bottom:87},legend:{data:['Registration cost','Registrations','Conservative band','Uncertainty buffer','Decay projection'],top:16,left:mobile ? 16 : 27,textStyle:{color:c.muted,fontSize:mobile ? 9 : 10},itemWidth:mobile ? 13 : 18,itemHeight:7,itemGap:mobile ? 12 : 22,selectedMode:true},tooltip:{trigger:'axis',confine:true,position:(point,params,dom,rect,size)=>[Math.max(0,Math.min(point[0]-size.contentSize[0]/2,size.viewSize[0]-size.contentSize[0])),size.viewSize[1]-size.contentSize[1]-5],backgroundColor:c.panel,borderColor:c.border,textStyle:{color:c.text,fontSize:12},extraCssText:'max-width:360px;white-space:normal;box-shadow:0 8px 32px #0003;border-radius:9px;padding:14px;',axisPointer:{type:'line',lineStyle:{color:c.dim,type:'dashed'}},formatter:tooltip},xAxis:{type:'time',min:minTime,max:bounds.end,axisLine:{lineStyle:{color:c.border}},axisTick:{show:false},axisLabel:{color:c.dim,fontSize:10,hideOverlap:true,formatter:v=>date(v)},splitLine:{show:false}},yAxis:{type:'value',min:0,name:unit === 'tao' ? 'TAO' : 'USD · latest rate',nameTextStyle:{color:c.dim,fontSize:9,align:'left'},nameGap:20,axisLabel:{color:c.dim,fontSize:10,formatter:v=>unit === 'usd' ? (v>=1000000 ? `$${num(v/1000000,1)}m` : `$${num(v/1000,0)}k`) : num(v)},axisLine:{show:false},axisTick:{show:false},splitLine:{lineStyle:{color:c.grid,type:'dashed',opacity:.65}}},dataZoom:[{type:'inside',startValue:bounds.start,endValue:bounds.visibleEnd,filterMode:'none',zoomOnMouseWheel:true,moveOnMouseWheel:false,preventDefaultMouseMove:true},{type:'slider',startValue:bounds.start,endValue:bounds.visibleEnd,filterMode:'none',bottom:18,height:23,left:mobile ? 58 : 77,right:mobile ? 24 : 40,borderColor:c.border,backgroundColor:'transparent',fillerColor:theme === 'dark' ? '#87beff0c' : '#226bc00c',dataBackground:{lineStyle:{color:c.dim,opacity:.5},areaStyle:{color:c.dim,opacity:.08}},selectedDataBackground:{lineStyle:{color:c.accent,opacity:.7},areaStyle:{color:c.accent,opacity:.12}},handleStyle:{color:c.panel,borderColor:c.dim},textStyle:{color:c.muted,fontSize:9},labelFormatter:v=>date(v)}],series}, {notMerge:true});
