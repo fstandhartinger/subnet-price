@@ -19,3 +19,9 @@ Fan: the robust last-eight fit is enclosed by the full residual envelope plus 2%
 The chart is the first main section. Desktop and mobile default to 10 August 2026 through the current time at page load (UTC). The 10 Aug–today button restores that range; 30d/90d/All presets still include the conditional future projection.
 
 Chart annotations use a reserved strip above the plot, with leader lines and priority 850 TAO target → buffer entry → main fan entry → dates. Phone layouts stack the three main callouts and omit daily labels. Labels recalculate on zoom, resize, refresh and theme/unit changes. Compact hover details occupy a reserved dock below the plot, keeping the line, markers and Now caption visible.
+
+## Artifact identifiers
+
+`artifacts.manifest.json` maps stable UI sections to IDs allocated by the artifact registry.
+The muted `a#` badges copy their identifier by click, Enter or Space. Local badge code
+uses no external requests and preserves the existing access controls and content policy.
