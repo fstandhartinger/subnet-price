@@ -1,0 +1,4 @@
+/* Artifact identifiers: local assets preserve each app's existing privacy policy. */
+.aid-host{position:relative;padding-top:24px!important}
+.aid{position:absolute;top:4px;right:6px;font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace!important;letter-spacing:0!important;text-transform:none!important;font-weight:400!important;color:inherit;opacity:.55;cursor:pointer;z-index:5;white-space:nowrap;border:0;background:transparent;padding:2px 4px;border-radius:3px}
+.aid:hover,.aid:focus-visible{opacity:1;outline:1px solid currentColor}

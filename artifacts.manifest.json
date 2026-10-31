@@ -1,0 +1,109 @@
+{
+  "surface": "app:subnet-price",
+  "items": {
+    "app": {
+      "kind": "app",
+      "title": "Subnet-Registrierungspreis",
+      "summary": "Zeigt die Kosten für eine Subnet-Registrierung und ihren Verlauf. Die Vorschau gilt nur unter den erläuterten Annahmen.",
+      "selector": ".site-header",
+      "id": "2a7a58",
+      "parent": null,
+      "url": "https://subnet-price.app.mintapis.com",
+      "refs": [
+        {
+          "kind": "code",
+          "target": "github:fstandhartinger/subnet-price@HEAD:public/artifact-badges.js#L3-L8",
+          "label": "Zuordnung der Artefakt-ID zur Ansicht"
+        }
+      ],
+      "links": [],
+      "access": "internal"
+    },
+    "chart": {
+      "kind": "panel",
+      "title": "Preisverlauf und Projektion",
+      "summary": "Vergleicht beobachtete Registrierungen mit einer bedingten Fortschreibung. Die Bänder sind Planungspuffer und keine Wahrscheinlichkeitsintervalle.",
+      "selector": ".chart-panel",
+      "id": "5ad24b",
+      "parent": "2a7a58",
+      "url": "https://subnet-price.app.mintapis.com",
+      "refs": [
+        {
+          "kind": "code",
+          "target": "github:fstandhartinger/subnet-price@HEAD:public/artifact-badges.js#L3-L8",
+          "label": "Zuordnung der Artefakt-ID zur Ansicht"
+        }
+      ],
+      "links": [
+        {
+          "rel": "explained_by",
+          "to": "e294ab"
+        },
+        {
+          "rel": "depends_on",
+          "to": "7dce61"
+        }
+      ],
+      "access": "internal"
+    },
+    "metrics": {
+      "kind": "panel",
+      "title": "Aktuelle Netzwerkwerte",
+      "summary": "Fasst den aktuellen Preis, den Rückgang und eine bedingte Zeitschätzung zusammen. Datenstand und Voraussetzungen sind bei der Einordnung zu beachten.",
+      "selector": ".metrics",
+      "id": "0b7787",
+      "parent": "2a7a58",
+      "url": "https://subnet-price.app.mintapis.com",
+      "refs": [
+        {
+          "kind": "code",
+          "target": "github:fstandhartinger/subnet-price@HEAD:public/artifact-badges.js#L3-L8",
+          "label": "Zuordnung der Artefakt-ID zur Ansicht"
+        }
+      ],
+      "links": [
+        {
+          "rel": "shows_data_of",
+          "to": "5ad24b"
+        }
+      ],
+      "access": "internal"
+    },
+    "mechanism": {
+      "kind": "panel",
+      "title": "Mechanik der Registrierung",
+      "summary": "Erklärt die Linien und Bänder des Diagramms. Eine neue Registrierung kann den angenommenen Verlauf verändern.",
+      "selector": ".explanation",
+      "id": "e294ab",
+      "parent": "2a7a58",
+      "url": "https://subnet-price.app.mintapis.com",
+      "refs": [
+        {
+          "kind": "code",
+          "target": "github:fstandhartinger/subnet-price@HEAD:public/artifact-badges.js#L3-L8",
+          "label": "Zuordnung der Artefakt-ID zur Ansicht"
+        }
+      ],
+      "links": [],
+      "access": "internal"
+    },
+    "sources": {
+      "kind": "panel",
+      "title": "Datenquellen und Aktualität",
+      "summary": "Nennt die Quellen und deren Aktualität. Historische Umrechnungen verwenden den jeweils verfügbaren Wechselkurs.",
+      "selector": ".page-footer",
+      "id": "7dce61",
+      "parent": "2a7a58",
+      "url": "https://subnet-price.app.mintapis.com",
+      "refs": [
+        {
+          "kind": "code",
+          "target": "github:fstandhartinger/subnet-price@HEAD:public/artifact-badges.js#L3-L8",
+          "label": "Zuordnung der Artefakt-ID zur Ansicht"
+        }
+      ],
+      "links": [],
+      "access": "internal"
+    }
+  }
+}
