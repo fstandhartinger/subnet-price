@@ -76,7 +76,7 @@
     $('chart-now').textContent = `Now ≈ ${price(current.price)}${unit === 'tao' && usdAvailable() ? ` (≈ $${num(current.price*rate())})` : ''}`;
     $('budget-detail').textContent = b ? `At the current time: budget for up to ${num(b.buffer,0)} TAO${usdAvailable() ? ` ≈ $${num(b.buffer*rate(),0)}` : ''} · buffer upper edge` : 'Budget buffer currently unavailable';
     $('floor-explanation').textContent = data.floor != null && Number.isFinite(Number(data.floor)) ? `The dashed path stops at the chain minimum of ${num(data.floor, 2)} TAO (read ${age(data.floor_at)}).` : 'The chain minimum is currently unavailable; any shown endpoint is illustrative.';
-    $('source-details').textContent = `Current cost: Finney chain · History & TAO/USD: Taostats · ${data.registrations.length} observed registrations`;
+    $('source-details').textContent = `Current cost & registration history: Finney chain · TAO/USD: ${(data.usd_source || 'Taostats').split(' (')[0]} · ${data.registrations.length} registrations read from chain`;
   }
   function defaultEnd(end) {
     // Show the forecast until the dashed decay line has passed through the whole fan (below its lower buffer edge), plus a small margin.

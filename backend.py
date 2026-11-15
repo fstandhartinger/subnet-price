@@ -15,11 +15,22 @@ import urllib.parse
 import urllib.request
 
 DAY = 86400000
-HISTORY_INTERVAL = 10800
+HISTORY_INTERVAL = 900
 CHAIN_INTERVAL = 300
+HISTORY_DAYS = 130
+SEED_FILE = Path(__file__).with_name('seed_registrations.json')
 # Twox128(SubtensorModule) + Twox128(NetworkMinLockCost), verified Finney storage.
 FLOOR_STORAGE_KEY = '0x658faa385070e074c85bf6b568cf0555af4319a20ed58ed2c549e6b6ea25fe88'
 ENDPOINTS = ('https://entrypoint-finney.opentensor.ai:443', 'https://lite.chain.opentensor.ai:443')
+# Historical state needs an archive node.
+ARCHIVE_ENDPOINTS = ('https://archive.chain.opentensor.ai:443',)
+# Twox128(SubtensorModule) + Twox128(NetworkLastLockCost): amount paid at the last registration.
+LAST_LOCK_KEY = '0x658faa385070e074c85bf6b568cf0555de7b71faea4b83188e1aa22b1f79237c'
+# LastRateLimitedBlock[RateLimitKey::NetworkLastRegistered] (Identity-hashed enum index 2).
+LAST_REG_KEY = '0x658faa385070e074c85bf6b568cf0555' + '7e1acdaa2002f0505824e25a590c1b71' + '02'
+# Pre-migration plain storage NetworkLastRegistered, used if the rate-limit entry is absent.
+LAST_REG_KEY_OLD = '0x658faa385070e074c85bf6b568cf0555523c2ca14b63d5abaac7b4e6c1f0b65f'
+TIMESTAMP_KEY = '0xf0c365c3cf59d671eb72da0e7a4113c49f1f0515f462cdcf84e0f1d6045dfcbb'
 
 
 def timestamp(value):
@@ -33,48 +44,55 @@ def quantile(values, q):
     return values[lo] + (values[min(lo + 1, len(values) - 1)] - values[lo]) * (pos - lo)
 
 
-def history_analysis(rows):
-    clean = {}
-    for r in rows:
-        try:
-            t, p = timestamp(r['timestamp']), int(r['registration_cost']) / 1e9
-            if p >= 0 and math.isfinite(p):
-                purchase = r.get('is_purchase') is True
-                clean[(t, int(r.get('block_number') or 0), p, purchase)] = (p, purchase)
-        except (ValueError, KeyError, TypeError):
-            continue
-    samples = [(key[0], *v) for key, v in sorted(clean.items())]
-    events, handled = [], set()
-    # Provider flags have included both pre- and post-registration quotes. Detect
-    # which side of the jump the flag occupies, rather than calling both prices paid.
-    for i, (t, p, purchase) in enumerate(samples):
-        if not purchase:
-            continue
-        jump_here = i > 0 and p > samples[i-1][1] * 1.3
-        jump_next = i + 1 < len(samples) and samples[i+1][1] > p * 1.3
-        if jump_here:
-            events.append({'time': t, 'price': p / 2, 'source': 'Taostats purchase flag; paid price inferred as half post-registration quote', 'inferred': True})
-            handled.add(i)
-        elif jump_next:
-            events.append({'time': t, 'price': p, 'source': 'Taostats purchase flag; observed pre-registration quote', 'inferred': False})
-            handled.add(i+1)
+def chain_analysis(regs, current=None, floor=None):
+    """Sawtooth, paid prices and decay rate from chain registrations.
+
+    regs: ascending [{block, time(ms), paid_rao}] read from Finney archive state
+    (NetworkLastLockCost and the NetworkLastRegistered block). After a
+    registration the quote is 2 x paid and falls linearly in blocks until the
+    next registration pays exactly the quote at its block (or the chain minimum).
+    """
+    regs=sorted((r for r in regs if r.get('time') is not None and r.get('paid_rao') is not None), key=lambda r: r['block'])
+    floor=floor or 0
+    events=[dict(time=r['time'],price=r['paid_rao']/1e9,block=r['block'],inferred=False,
+                 source=f"Finney chain: lock cost paid at block {r['block']}") for r in regs]
+    # Decay period = time for the quote to fall from 2x paid to 1x paid.
+    periods=[]
+    for a,b in zip(events,events[1:]):
+        drop=2*a['price']-b['price']
+        if b['price']>floor*1.001 and drop>0 and b['time']>a['time']:
+            periods.append((b['time']-a['time'])*a['price']/drop)
+    rate=0
+    if events and current and current['time']>events[-1]['time'] and 2*events[-1]['price']>current['price']>floor*1.001:
+        last=events[-1]
+        rate=(2*last['price']-current['price'])/((current['time']-last['time'])/DAY)
+        periods.append(last['price']*DAY/rate)
+    elif events and periods:
+        rate=events[-1]['price']*DAY/statistics.median(periods[-4:])
+    period=statistics.median(periods[-4:]) if periods else None
+    pts=[]
+    def segment(start, value, stop, end_value=None):
+        # Line from (start, value) to stop; floor-clamped when the end is unknown or at the minimum.
+        if end_value is not None and end_value>floor*1.001:
+            slope=(value-end_value)/max(1,stop-start)
+        elif period:
+            slope=(value/2)/period
         else:
-            # Ambiguous flags are retained as provenance, but cannot establish paid price.
-            continue
-    for i in range(1, len(samples)):
-        if i not in handled and samples[i][1] > samples[i-1][1] * 1.3:
-            events.append({'time': samples[i][0], 'price': samples[i][1] / 2, 'source': 'Inferred jump; approximate paid price = half post-registration quote', 'inferred': True})
-    events.sort(key=lambda e: e['time'])
-    # Estimate the most recent decay segment only; chain/history gaps never create events.
-    last_jump = max((i for i in range(1, len(samples)) if samples[i][1] > samples[i-1][1]*1.3), default=0)
-    seg = samples[last_jump:]
-    slopes = [(a[1]-b[1])/((b[0]-a[0])/DAY) for a,b in zip(seg, seg[1:]) if b[0]>a[0] and a[1]>=b[1]]
-    rate = statistics.median(slopes) if slopes else 0
-    points = [[t,p] for t,p,_ in samples]
-    for event in events:
-        if event['inferred']:
-            points.append([event['time']-1,event['price']])
-    return sorted(points), events, rate
+            return [[start,value]]
+        times=list(range(int(start),int(stop),6*3600000))
+        if slope>0 and start<start+(value-floor)/slope<stop: times.append(int(start+(value-floor)/slope))  # floor reached
+        return [[t,max(floor,value-slope*(t-start))] for t in sorted(set(times))]
+    for i,e in enumerate(events):
+        if i+1<len(events):
+            nxt=events[i+1]
+            pts+=segment(e['time'],2*e['price'],nxt['time'],nxt['price'])
+            pts.append([nxt['time']-1,nxt['price']])
+        elif current and current['time']>e['time']:
+            pts+=segment(e['time'],2*e['price'],current['time'],current['price'])
+            pts.append([current['time'],current['price']])
+        else:
+            pts.append([e['time'],2*e['price']])
+    return pts, events, rate
 
 
 def trend_fit(events):
@@ -203,6 +221,10 @@ class RateLimited(Exception):
     def __init__(self, delay=300): self.delay=delay
 
 
+class CreditsExhausted(Exception):
+    """Taostats answered 429 'Insufficient credits': not a transient rate limit."""
+
+
 def request_json(url, key=None, body=None):
     headers={'Accept':'application/json','User-Agent':'subnet-price/1.0'}
     if key: headers['Authorization']=key
@@ -215,6 +237,8 @@ def request_json(url, key=None, body=None):
             return json.loads(raw)
     except urllib.error.HTTPError as e:
         if e.code==429:
+            detail=e.read(4096).decode('utf-8','replace')
+            if 'Insufficient credits' in detail: raise CreditsExhausted('Taostats credits exhausted') from None
             retry=e.headers.get('Retry-After','300')
             try: delay=float(retry)
             except ValueError: delay=300
@@ -222,17 +246,91 @@ def request_json(url, key=None, body=None):
         raise
 
 
-def fetch_history(key, now):
-    rows=[]
-    since=now-130*DAY
-    for page in range(1,26):
-        data=request_json(f'https://api.taostats.io/api/subnet/registration_cost/history/v1?limit=200&page={page}&order=timestamp_desc',key)
-        batch=data.get('data',[])
-        rows.extend(batch)
-        if not batch or not data.get('pagination',{}).get('next_page') or timestamp(batch[-1]['timestamp'])<since:
-            return [r for r in rows if timestamp(r['timestamp'])>=since]
-        time.sleep(1.2)
-    raise ValueError('History exceeded bounded pagination; retaining previous cache')
+def chain_rpc(method, params, endpoints=ARCHIVE_ENDPOINTS):
+    last=None
+    for endpoint in endpoints:
+        for attempt in range(4):
+            try:
+                time.sleep(1.0)  # public archive node budgets historical work; stay slow
+                reply=request_json(endpoint,body={'jsonrpc':'2.0','id':1,'method':method,'params':params})
+                if 'error' in reply:
+                    error=reply['error']
+                    if isinstance(error,dict) and (error.get('code')==-32004 or 'rate limit' in str(error.get('message','')).lower()):
+                        raise RateLimited(600)  # budget exhausted: back off as a whole, do not retry now
+                    raise ValueError(f'RPC error {error}')
+                return reply['result']
+            except RateLimited:
+                raise
+            except (OSError,ValueError,KeyError,TypeError) as e:
+                last=e; time.sleep(1+attempt)
+    raise ValueError(f'Archive RPC {method} unavailable: {last}')
+
+
+def u64(value):
+    if not value: return None
+    raw=bytes.fromhex(value.removeprefix('0x'))
+    if len(raw) not in (8,16): raise ValueError('Unexpected SCALE integer length')
+    return int.from_bytes(raw,'little')
+
+
+def storage_at(keys, block_hash):
+    result=chain_rpc('state_queryStorageAt',[keys,block_hash])
+    changes=dict(result[0]['changes']) if result else {}
+    return [u64(changes.get(k)) for k in keys]
+
+
+def fetch_registrations(known, now, max_steps=80):
+    """Walk Finney archive state back from the finalized head, one registration per step.
+
+    At any block, NetworkLastRegistered is the block of the latest registration and
+    NetworkLastLockCost the TAO it locked (= the quote it paid). Reading the same keys
+    one block before that registration yields the previous one. Already-known
+    registrations stop the walk, so steady-state refreshes cost two RPC calls.
+    """
+    since=now-HISTORY_DAYS*DAY
+    by_block={r['block']:r for r in known}
+    found=[]
+    cursor=chain_rpc('chain_getFinalizedHead',[])
+    for _ in range(max_steps):
+        block,paid,old=storage_at([LAST_REG_KEY,LAST_LOCK_KEY,LAST_REG_KEY_OLD],cursor)
+        block=block or old
+        if not block or paid is None: break
+        if block in by_block and by_block[block]['paid_rao']==paid:
+            found+= [r for r in known if r['block']<=block]
+            break
+        (stamp,)=storage_at([TIMESTAMP_KEY],chain_rpc('chain_getBlockHash',[block]))
+        if not stamp: raise ValueError(f'No timestamp at block {block}')
+        found.append(dict(block=block,time=stamp,paid_rao=paid))
+        if stamp<since: break
+        cursor=chain_rpc('chain_getBlockHash',[block-1])
+    else:
+        raise ValueError('Registration walk exceeded its bound; retaining previous cache')
+    regs=sorted({r['block']:r for r in found}.values(),key=lambda r:r['block'])
+    # Keep the window plus the one registration before it (start of the first segment).
+    inside=[r for r in regs if r['time']>=since]
+    return regs[-len(inside)-1:] if len(inside)<len(regs) else regs
+
+
+def fetch_usd(key):
+    """TAO/USD is not on chain. Taostats first; on exhausted credits a keyless public price."""
+    problems=[]
+    if key:
+        try:
+            row=request_json('https://api.taostats.io/api/price/latest/v1?asset=tao',key)['data'][0]
+            value=float(row['price'])
+            if not math.isfinite(value) or value<=0: raise ValueError('Invalid USD rate')
+            return value,timestamp(row['timestamp']) if row.get('timestamp') else int(time.time()*1000),'Taostats'
+        except CreditsExhausted as e:
+            print('ERROR usd: Taostats credits exhausted (429 Insufficient credits); using CoinGecko public price',flush=True)
+            problems.append(str(e))
+        except (OSError,ValueError,KeyError,TypeError,IndexError,RateLimited) as e:
+            problems.append(f'Taostats: {type(e).__name__}')
+    else:
+        problems.append('Taostats key not configured')
+    row=request_json('https://api.coingecko.com/api/v3/simple/price?ids=bittensor&vs_currencies=usd&include_last_updated_at=true')['bittensor']
+    value=float(row['usd'])
+    if not math.isfinite(value) or value<=0: raise ValueError('Invalid USD rate')
+    return value,int(row.get('last_updated_at') or time.time())*1000,'CoinGecko ('+'; '.join(problems)+')'
 
 
 def fetch_chain():
@@ -272,7 +370,7 @@ class Store:
         self._body=None
         self._body_data=None
         self.cache=Path(cache_dir or os.getenv('CACHE_DIR','/tmp/subnet-price'))/'cache.json'
-        self.state=dict(rows=[],current=None,history_at=None,usd=None,usd_at=None,floor=None,floor_at=None)
+        self.state=dict(regs=[],current=None,history_at=None,usd=None,usd_at=None,usd_source=None,floor=None,floor_at=None)
         self.errors={}
         self.due={'chain':0,'history':0,'usd':0}
         self.failures={k:0 for k in self.due}
@@ -280,9 +378,16 @@ class Store:
         self.last_history_attempt=0
         try:
             cached=json.loads(self.cache.read_text())
-            if isinstance(cached.get('rows'),list) and len(cached['rows'])<=5000:
+            if isinstance(cached.get('regs'),list) and len(cached['regs'])<=5000:
                 self.state.update({k:cached[k] for k in self.state if k in cached})
         except (OSError,ValueError,TypeError): pass
+        if not self.state['regs']:
+            # Chain-read registrations shipped with the image, so a cold start only
+            # walks registrations newer than the seed (each record names its block).
+            try:
+                seed=json.loads(SEED_FILE.read_text())
+                if isinstance(seed,list) and all({'block','time','paid_rao'}<=set(r) for r in seed): self.state['regs']=seed
+            except (OSError,ValueError,TypeError): pass
 
     def refresh(self, kind):
         now=int(time.time()*1000)
@@ -293,26 +398,23 @@ class Store:
                 try: update.update(floor=fetch_chain_floor(),floor_at=now)
                 except RateLimited as e: floor_delay=e.delay
                 except ValueError: pass
+            elif kind=='history':
+                self.last_history_attempt=time.time()
+                with self.lock: known=list(self.state['regs'])
+                update=dict(regs=fetch_registrations(known,now),history_at=now)
             else:
-                key=os.getenv('TAOSTATS_API') or os.getenv('TAOSTATS_API_KEY')
-                if not key: raise ValueError('Taostats server credential unavailable')
-                if kind=='history':
-                    self.last_history_attempt=time.time()
-                    update=dict(rows=fetch_history(key,now),history_at=now)
-                else:
-                    row=request_json('https://api.taostats.io/api/price/latest/v1?asset=tao',key)['data'][0]
-                    value=float(row['price'])
-                    if not math.isfinite(value) or value<=0: raise ValueError('Invalid USD rate')
-                    update=dict(usd=value,usd_at=timestamp(row['timestamp']) if row.get('timestamp') else now)
+                value,at,source=fetch_usd(os.getenv('TAOSTATS_API') or os.getenv('TAOSTATS_API_KEY'))
+                update=dict(usd=value,usd_at=at,usd_source=source)
             with self.lock:
                 if kind=='chain':
                     quote=update['current']
-                    if self.chain_samples and quote['price']>self.chain_samples[-1]['price']*1.01:
-                        self.chain_samples=[]
+                    jumped=bool(self.chain_samples) and quote['price']>self.chain_samples[-1]['price']*1.01
+                    if jumped: self.chain_samples=[]
                     if not self.chain_samples or quote['time']-self.chain_samples[-1]['time']>=60000:
                         self.chain_samples=(self.chain_samples+[quote])[-12:]
-                    raw_pts,_,_=history_analysis(self.state['rows'])
-                    if raw_pts and quote['price']>raw_pts[-1][1]*1.3 and time.time()-self.last_history_attempt>60 and self.failures['history']==0:
+                    regs=self.state['regs']
+                    unindexed=bool(regs) and quote['price']>2*regs[-1]['paid_rao']/1e9*1.001
+                    if (jumped or unindexed) and time.time()-self.last_history_attempt>60 and self.failures['history']==0:
                         self.due['history']=min(self.due['history'],time.time())
                 self.state.update(update)
                 self.errors.pop(kind,None)
@@ -330,6 +432,7 @@ class Store:
                 self.failures[kind]+=1
                 self.due[kind]=time.time()+(e.delay if isinstance(e,RateLimited) else min(3600,60*2**min(self.failures[kind],6)))
                 self.errors[kind]=f'{kind.capitalize()} refresh unavailable; retaining last good data.'
+            print(f'ERROR {kind} refresh failed ({type(e).__name__}: {e}); retaining last good data',flush=True)
 
     def loop(self,kind):
         while True:
@@ -350,9 +453,9 @@ class Store:
         with self.lock:
             state=dict(self.state); warnings=list(self.errors.values()); chain_samples=list(self.chain_samples)
         now=int(time.time()*1000)
-        pts,events,rate=history_analysis(state['rows'])
         current=state['current']
-        if len(chain_samples)>=2:
+        pts,events,rate=chain_analysis(state['regs'],current,state['floor'])
+        if not rate and len(chain_samples)>=2:
             first,last=chain_samples[0],chain_samples[-1]
             if last['time']-first['time']>=60000 and last['price']<first['price']:
                 rate=(first['price']-last['price'])/((last['time']-first['time'])/DAY)
@@ -361,22 +464,19 @@ class Store:
             if age>900000: warnings.append('Current chain quote is stale; see its observation time.')
         else: warnings.append('Current chain price unavailable.')
         if not pts: warnings.append('Registration history unavailable.')
-        elif now-(state['history_at'] or 0)>6*3600000: warnings.append('History cache is stale.')
+        elif now-(state['history_at'] or 0)>2*3600000: warnings.append('Registration history is stale.')
         if state['usd'] is None: warnings.append('TAO/USD conversion unavailable.')
         elif now-(state['usd_at'] or 0)>3600000: warnings.append('TAO/USD conversion is stale.')
-        priced_times={e['time'] for e in events}
-        unpriced=sum(1 for r in state['rows'] if r.get('is_purchase') is True and timestamp(r['timestamp']) not in priced_times)
-        if unpriced: warnings.append(f'{unpriced} historical purchase flags could not be priced from the sampled history and are excluded from the bands.')
         recent=events[-8:]
         bands=dict(min=min(r['price'] for r in recent),max=max(r['price'] for r in recent),n=len(recent)) if recent else None
         trend=trend_fit(events)
         if state['floor'] is None: warnings.append('Chain minimum unavailable; projection paused.')
         elif now-(state['floor_at'] or 0)>3600000: warnings.append('Chain minimum uses its last known value.')
         projection,markers=project(current,rate,bands,trend,state['floor']) if current and now-current['time']<=900000 and state['floor'] is not None else ([],[])
-        if current and pts and current['price']>pts[-1][1]*1.3:
-            warnings.append('Chain quote has risen since cached history; recent registrations may not yet be indexed. Projection paused.')
+        if current and events and current['price']>2*events[-1]['price']*1.001:
+            warnings.append('Chain quote has risen above the last indexed registration; a new registration is being read from the chain. Projection paused.')
             projection,markers=[],[]
-        return dict(pts=pts,registrations=events,rate=rate,usd=state['usd'],built=now,current_at=current['time'] if current else None,history_at=state['history_at'],usd_at=state['usd_at'],current=current,floor=state['floor'],floor_at=state['floor_at'],trend=trend,bands=bands,projection=projection,markers=markers,warnings=warnings,synthetic_points=[dict(time=e['time']-1,source='Inferred pre-jump quote for sawtooth display') for e in events if e['inferred']])
+        return dict(pts=pts,registrations=events,rate=rate,usd=state['usd'],built=now,current_at=current['time'] if current else None,history_at=state['history_at'],usd_at=state['usd_at'],current=current,floor=state['floor'],floor_at=state['floor_at'],trend=trend,bands=bands,projection=projection,markers=markers,warnings=warnings,usd_source=state.get('usd_source'),synthetic_points=[])
 
 
 class Server(http.server.ThreadingHTTPServer):

@@ -10,30 +10,75 @@ import urllib.error
 import backend as b
 
 
-def row(day,price,purchase=False):
-    import datetime
-    return dict(timestamp=datetime.datetime.fromtimestamp(day*86400,datetime.timezone.utc).isoformat(),registration_cost=str(int(price*1e9)),is_purchase=purchase)
+def reg(day,paid,block=None):
+    return dict(block=block or int(day*7200),time=int(day*86400000),paid_rao=int(paid*1e9))
+
+
+class FakeChain:
+    """Archive state: registrations at blocks; storage reads at a hash = block number."""
+    def __init__(self, regs, head):
+        self.regs=sorted(regs,key=lambda r:r['block']); self.head=head; self.calls=0
+    def __call__(self, method, params, endpoints=None):
+        self.calls+=1
+        if method=='chain_getFinalizedHead': return self.head
+        if method=='chain_getBlockHash': return params[0]
+        if method=='state_queryStorageAt':
+            keys,block=params
+            last=[r for r in self.regs if r['block']<=block]
+            values={b.TIMESTAMP_KEY:next((r['time'] for r in self.regs if r['block']==block),None)}
+            if last: values.update({b.LAST_REG_KEY:last[-1]['block'],b.LAST_LOCK_KEY:last[-1]['paid_rao']})
+            enc=lambda v: None if v is None else '0x'+v.to_bytes(8,'little').hex()
+            return [dict(block=block,changes=[[k,enc(values.get(k))] for k in keys])]
+        raise AssertionError(method)
 
 
 class MathTests(unittest.TestCase):
-    def test_provider_pre_and_post_purchase_formats(self):
-        pts,events,rate=b.history_analysis([row(1,600),row(2,500,True),row(2.001,1000),row(3,900),row(4,1600,True),row(4.001,1599.9),row(5,1500)])
-        self.assertEqual([e['price'] for e in events],[500,800])
-        self.assertFalse(events[0]['inferred']); self.assertTrue(events[1]['inferred'])
-        self.assertAlmostEqual(rate,100,places=5)
+    def test_chain_sawtooth_paid_prices_and_current_decay(self):
+        regs=[reg(1,500),reg(3,600),reg(5,700)]
+        current=dict(time=int(5.5*b.DAY),price=1225,source='chain')
+        pts,events,rate=b.chain_analysis(regs,current,1)
+        self.assertEqual([e['price'] for e in events],[500,600,700])
+        self.assertTrue(all(not e['inferred'] and 'block' in e['source'] for e in events))
+        self.assertAlmostEqual(rate,350,places=6)  # 1400 -> 1225 in half a day
+        self.assertIn([regs[1]['time']-1,600],pts)  # pre-jump point = exact paid price
+        self.assertIn([regs[0]['time'],1000],pts)  # post-registration quote = 2 x paid
+        self.assertEqual(pts[-1],[current['time'],1225])
+        self.assertEqual(pts,sorted(pts))
 
-    def test_same_timestamp_distinct_blocks_preserve_event(self):
-        pre=row(1,500,True); pre['block_number']=10
-        post=row(1,1000); post['block_number']=11
-        pts,events,_=b.history_analysis([post,pre,dict(pre)])
-        self.assertEqual(len(pts),2)
-        self.assertEqual(events[0]['price'],500)
-        self.assertFalse(events[0]['inferred'])
+    def test_floor_segment_uses_decay_period(self):
+        regs=[reg(0,100),reg(2,150),reg(10,1)]
+        pts,_,_=b.chain_analysis(regs,None,1)
+        segment=[p for p in pts if regs[1]['time']<=p[0]<regs[2]['time']-1]
+        self.assertEqual(min(p[1] for p in segment),1)
+        self.assertGreater(segment[0][1],segment[1][1])
 
-    def test_jump_without_flag_is_explicitly_inferred(self):
-        _,events,_=b.history_analysis([row(1,600),row(2,1000)])
-        self.assertEqual(events[0]['price'],500)
-        self.assertIn('Inferred jump',events[0]['source'])
+    def test_walk_reads_chain_and_stops_at_known(self):
+        now=200*b.DAY
+        regs=[reg(d,100+d) for d in (40,60,80,120,150,190)]
+        chain=FakeChain(regs,int(199*7200))
+        with patch.object(b,'chain_rpc',chain):
+            found=b.fetch_registrations([],now)
+            self.assertEqual([r['block'] for r in found],[r['block'] for r in regs[1:]])  # window + one before
+            chain.calls=0
+            again=b.fetch_registrations(found,now)
+        self.assertEqual(again,found); self.assertLessEqual(chain.calls,2)
+        chain.regs.append(reg(195,300)); chain.head=int(196*7200)
+        with patch.object(b,'chain_rpc',chain):
+            self.assertEqual(b.fetch_registrations(found,now)[-1]['paid_rao'],300*10**9)
+
+    def test_archive_budget_error_backs_off_without_retry_storm(self):
+        reply={'jsonrpc':'2.0','id':1,'error':{'code':-32004,'message':'Historical work rate limit exceeded'}}
+        with patch.object(b,'request_json',return_value=reply) as call, patch.object(b.time,'sleep'):
+            with self.assertRaises(b.RateLimited): b.chain_rpc('state_queryStorageAt',[[],'0x0'])
+        self.assertEqual(call.call_count,1)
+
+    def test_usd_exhausted_credits_fall_back_loudly(self):
+        def fake(url,key=None,body=None):
+            if 'taostats' in url: raise b.CreditsExhausted('Taostats credits exhausted')
+            return {'bittensor':{'usd':321.5,'last_updated_at':1000}}
+        with patch.object(b,'request_json',side_effect=fake):
+            value,at,source=b.fetch_usd('key')
+        self.assertEqual((value,at),(321.5,1000000)); self.assertIn('credits exhausted',source)
 
     def test_robust_trend_ignores_outlier(self):
         events=[dict(time=i*b.DAY,price=100+10*i+(500 if i==4 else 0)) for i in range(8)]
@@ -144,24 +189,24 @@ class StoreTests(unittest.TestCase):
     def tearDown(self): self.floor_patch.stop(); self.tmp.cleanup()
     def test_current_chain_gap_never_creates_registration(self):
         now=int(b.time.time()*1000)
-        self.store.state.update(rows=[row(now/b.DAY-2,600),row(now/b.DAY-1,500)],history_at=now,current=dict(time=now,price=1000,source='chain'))
+        self.store.state.update(regs=[reg(now/b.DAY-2,600),reg(now/b.DAY-1,300)],history_at=now,current=dict(time=now,price=1000,source='chain'))
         data=self.store.data()
-        self.assertEqual(data['registrations'],[])
+        self.assertEqual(len(data['registrations']),2)
         self.assertEqual(data['projection'],[])
-        self.assertTrue(any('not yet' in w for w in data['warnings']))
+        self.assertTrue(any('being read from the chain' in w for w in data['warnings']))
     def test_last_good_preserved_on_rate_limit(self):
-        self.store.state['rows']=[row(1,100)]
-        with patch.dict(b.os.environ,{'TAOSTATS_API':'test-only'}), patch.object(b,'fetch_history',side_effect=b.RateLimited(700)):
+        self.store.state['regs']=[reg(1,100)]
+        with patch.object(b,'fetch_registrations',side_effect=b.RateLimited(700)):
             self.store.refresh('history')
-        self.assertEqual(self.store.state['rows'],[row(1,100)])
+        self.assertEqual(self.store.state['regs'],[reg(1,100)])
         self.assertGreater(self.store.due['history'],b.time.time()+695)
         self.assertIn('history',self.store.errors)
     def test_consecutive_chain_quotes_update_decay_and_jump_requests_history(self):
         now=int(b.time.time()*1000)
-        self.store.state.update(rows=[row(now/b.DAY-2,600),row(now/b.DAY-1,500)],history_at=now)
+        self.store.state.update(regs=[reg(now/b.DAY-2,500)],history_at=now)
         self.store.chain_samples=[dict(time=now-b.DAY,price=600,source='chain')]
         with patch.object(b,'fetch_chain',return_value=550): self.store.refresh('chain')
-        self.assertAlmostEqual(self.store.data()['rate'],50,places=3)
+        self.assertAlmostEqual(self.store.data()['rate'],225,places=0)  # 1000 -> 550 over two days
         self.store.due['history']=b.time.time()+10000
         with patch.object(b,'fetch_chain',return_value=1200): self.store.refresh('chain')
         self.assertEqual(len(self.store.chain_samples),1)
@@ -179,8 +224,8 @@ class StoreTests(unittest.TestCase):
     def test_history_fetch_does_not_block_chain_and_cache_keeps_both(self):
         entered=threading.Event(); release=threading.Event()
         def history(*args):
-            entered.set(); release.wait(2); return [row(1,500)]
-        with patch.dict(b.os.environ,{'TAOSTATS_API':'test-only'}), patch.object(b,'fetch_history',side_effect=history), patch.object(b,'fetch_chain',return_value=450):
+            entered.set(); release.wait(2); return [reg(1,500)]
+        with patch.object(b,'fetch_registrations',side_effect=history), patch.object(b,'fetch_chain',return_value=450):
             worker=threading.Thread(target=self.store.refresh,args=('history',)); worker.start()
             self.assertTrue(entered.wait(1))
             self.store.refresh('chain')
@@ -188,7 +233,7 @@ class StoreTests(unittest.TestCase):
             release.set(); worker.join(2); self.assertFalse(worker.is_alive())
         cached=b.Store(self.tmp.name).state
         self.assertEqual(cached['current']['price'],450)
-        self.assertEqual(cached['rows'],[row(1,500)])
+        self.assertEqual(cached['regs'],[reg(1,500)])
 
     def test_response_cache_avoids_repeated_fit(self):
         with patch.object(self.store,'data',wraps=self.store.data) as compute:
@@ -199,9 +244,14 @@ class StoreTests(unittest.TestCase):
 
     def test_stale_current_has_no_projection(self):
         now=int(b.time.time()*1000)
-        self.store.state.update(rows=[row(now/b.DAY-2,600),row(now/b.DAY-1,500)],history_at=now,current=dict(time=now-1000000,price=450,source='chain'))
+        self.store.state.update(regs=[reg(now/b.DAY-2,600),reg(now/b.DAY-1,500)],history_at=now,current=dict(time=now-1000000,price=450,source='chain'))
         data=self.store.data(); self.assertEqual(data['projection'],[])
         self.assertTrue(any('stale' in w for w in data['warnings']))
+    def test_cold_start_uses_shipped_chain_seed(self):
+        seed=json.loads(b.SEED_FILE.read_text())
+        self.assertGreaterEqual(len(seed),20)
+        self.assertEqual(self.store.state['regs'],seed)
+        self.assertEqual([r['block'] for r in seed],sorted(r['block'] for r in seed))
     def test_fresh_chain_observation_persists_without_credentials(self):
         with patch.object(b,'fetch_chain',return_value=123): self.store.refresh('chain')
         self.assertEqual(b.Store(self.tmp.name).state['current']['price'],123)
@@ -214,7 +264,7 @@ class HttpTests(unittest.TestCase):
             secret=Path(tmp)/'private'; secret.write_text('private'); (root/'link').symlink_to(secret)
             store=b.Store(str(Path(tmp)/'cache'))
             now=int(b.time.time()*1000)
-            store.state.update(rows=[row(now/b.DAY,100)],current=dict(time=now,price=100,source='chain'),history_at=now)
+            store.state.update(regs=[reg(now/b.DAY-1,100)],current=dict(time=now,price=100,source='chain'),history_at=now)
             server=b.Server(('127.0.0.1',0),functools.partial(b.Handler,directory=str(root))); server.store=store
             worker=threading.Thread(target=server.serve_forever,daemon=True); worker.start()
             url=f'http://127.0.0.1:{server.server_port}'

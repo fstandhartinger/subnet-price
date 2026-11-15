@@ -2,6 +2,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY backend.py /app/backend.py
+COPY seed_registrations.json /app/seed_registrations.json
 COPY public /app/public
 COPY build_assets.py /app/build_assets.py
 RUN python build_assets.py public && rm build_assets.py
